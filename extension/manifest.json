@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "102",
+  "name": "Rival Shift - Player Data Bridge",
+  "version": "0.9.27",
+  "description": "Loads linked Rivals Data profiles and sends public Marvel Rivals stats to the local Rival Shift app.",
+  "permissions": ["alarms", "tabs"],
+  "host_permissions": [
+    "https://rivalsdata.com/*",
+    "http://127.0.0.1:38573/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://rivalsdata.com/player/*"
+      ],
+      "js": ["parser.js", "content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": { "default_title": "Rival Shift player-data bridge" }
+}
