@@ -16,6 +16,9 @@ Rival Shift is a Windows-first Electron account switcher focused on **Marvel Riv
 - Can monitor linked profiles in the background and show a desktop notification when a new match is detected.
 - Orders accounts by competitive rank by default, with rank-tier filtering and alternate sorting by favorites, win rate, level, recent use, or name.
 - Provides a one-click Quick Launch action on every account card; it launches the current account or switches and launches another account immediately.
+- Includes a cross-account hero intelligence dashboard.
+- Supports favorite accounts, persistent custom groups, group filters, and a global privacy mode that obscures names, UIDs, and avatars.
+- Shows a built-in changelog alongside automatic update status.
 - Force-closes Marvel Rivals before switching Steam's remembered account, relaunching Steam, and optionally starting Marvel Rivals (Steam app `2767030`).
 - Can skip the game launcher for launches started through Rival Shift.
 - Can notify when Marvel Rivals is launched directly while launch-only features are enabled, and can start with Windows either as a visible window or in the system tray.
@@ -28,7 +31,7 @@ Rival Shift is a Windows-first Electron account switcher focused on **Marvel Riv
 
 ## Installation and sharing
 
-Run `release/Rival Shift Setup 0.9.27.exe`. The borderless custom bootstrapper contains the desktop application and its browser-extension files; recipients do not need the source tree or `node_modules`.
+Run `release/Rival Shift Setup 0.9.39.exe`. The borderless custom bootstrapper contains the desktop application and its browser-extension files; recipients do not need the source tree or `node_modules`.
 
 For public distribution, share the setup executable together with the project license and third-party notices, publish a SHA-256 checksum, and use a trusted Windows code-signing certificate so SmartScreen can identify the publisher. Keep the source-code offer/repository available as required by GPL-3.0.
 
@@ -41,14 +44,14 @@ pnpm install
 pnpm dev
 ```
 
-Official releases use the repository's Windows release workflow. To publish a version:
+Public releases contain binaries and updater metadata only. The application source remains local. To publish a version, create a tag against the repository's README-only `main` commit and upload the four generated files from `release/`:
 
 ```powershell
-git tag v0.9.27
-git push origin v0.9.27
+git tag v0.9.39 origin/main
+git push origin v0.9.39
 ```
 
-The workflow verifies that the tag matches `package.json`, runs the full test suite, builds the Windows packages, and creates a GitHub Release. It embeds `https://github.com/XiSl0w/rivals-shift/releases/latest/download/` as the update feed and uploads `latest.yml`, the raw `Rival Shift Payload` installer, its `.blockmap`, and the custom first-install setup executable.
+The packaged app uses Electron's public GitHub Releases provider for `XiSl0w/rivals-shift`. Each release must include `latest.yml`, the raw `Rival-Shift-Payload` installer, its `.blockmap`, and the custom first-install setup executable.
 
 Before publishing a later version, update the version in `package.json`, `extension/manifest.json`, `electron/rivals-bridge.ts`, and the visible version labels in `src/App.tsx`, then tag that exact version. For signed releases, add `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD` as GitHub Actions repository secrets.
 

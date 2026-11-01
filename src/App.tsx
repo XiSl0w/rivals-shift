@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, Bell, Check, ChevronDown, ChevronRight, CircleHelp, Copy, Crosshair, Database, Download, ExternalLink, Gamepad2, Heart, History, House,
-  Keyboard, Link2, LoaderCircle, LockKeyhole, LogOut, Minimize2, Monitor, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Power, Radio, RefreshCw,
+  Keyboard, Link2, LoaderCircle, LockKeyhole, LogOut, Maximize2, Minimize2, Monitor, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Power, Radio, RefreshCw,
   Palette, Puzzle, Search, Settings, ShieldCheck, SkipForward, SlidersHorizontal, Sparkles, Star, Swords, TrendingUp, Unlink, Upload, UserPlus, Users, X, Zap,
 } from 'lucide-react';
 import { demoApi } from './demo';
 import type { AppPreferences, AppPrompt, AppUpdateStatus, DiscordLivePresence, HeroPerformance, LauncherSkipStatus, LiveMatchPlayer, LiveMatchSnapshot, MatchSummary, RivalProfile, RivalsDataExtensionStatus, SteamAccount, SteamSnapshot, TopSniperPlayer, TrackedPlayer } from './types';
 import { shortRankName } from './rank-format';
 import { accountMatchesRankFilter, rankFilterOptions, sortAccounts, type AccountSort, type RankFilter } from './account-order';
-import { isMaskedLiveName, postMatchSourcePlayers, selectedPostMatchSourcePlayers } from './live-match';
+import { hasMaskedLivePlayerNames, postMatchSourcePlayers, selectedPostMatchSourcePlayers } from './live-match';
+import { reliableRivalsAssetUrl } from './rivals-assets';
 
 const api = window.rivalShift ?? demoApi;
 const SUPPORTED_BROWSERS = [
@@ -80,7 +81,7 @@ function shortcutFromKey(event: React.KeyboardEvent<HTMLInputElement>) {
 }
 
 type Modal = 'link' | 'switch' | 'about' | 'history' | 'backup' | null;
-type ActiveTab = 'accounts' | 'players' | 'top-sniper' | 'live-game' | 'post-match' | 'settings';
+type ActiveTab = 'accounts' | 'intelligence' | 'players' | 'top-sniper' | 'live-game' | 'post-match' | 'settings';
 
 export function App() {
   const [snapshot, setSnapshot] = useState<SteamSnapshot>({ steamRoot: null, accounts: [], platform: 'win32' });
@@ -90,9 +91,14 @@ export function App() {
   const [search, setSearch] = useState('');
   const [sortOrder, setSortOrder] = useState<AccountSort>(() => (localStorage.getItem('rival-shift-account-sort') as AccountSort) || 'rank-desc');
   const [rankFilter, setRankFilter] = useState<RankFilter>('all');
+  const [groupFilter, setGroupFilter] = useState('all');
+  const [groupEditor, setGroupEditor] = useState<SteamAccount | null>(null);
+  const [removeAccount, setRemoveAccount] = useState<SteamAccount | null>(null);
+  const [hiddenAccounts, setHiddenAccounts] = useState<string[]>([]);
   const [modal, setModal] = useState<Modal>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>('accounts');
   const [railExpanded, setRailExpanded] = useState(() => localStorage.getItem('rival-shift-sidebar-expanded') === 'true');
+  const [windowMaximized, setWindowMaximized] = useState(false);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState('');
   const [switching, setSwitching] = useState(false);
@@ -104,8 +110,10 @@ export function App() {
   const [storagePath, setStoragePath] = useState('');
   const [launcherSkipStatus, setLauncherSkipStatus] = useState<LauncherSkipStatus>({ available: false, enabled: false, message: 'Checking Marvel Rivals installation...' });
   const [extensionStatus, setExtensionStatus] = useState<RivalsDataExtensionStatus>({ connected: false, lastSeen: null, extensionPath: '', pendingJobs: 0, message: 'Checking Rivals Data extension...' });
-  const [preferences, setPreferences] = useState<AppPreferences>({ theme: 'nebula', rivalsDataMode: 'api', discordRichPresence: true, quickSwitchShortcut: false, quickAccessShortcut: 'CommandOrControl+Shift+R', closeAction: 'ask', matchNotifications: true, backgroundMonitoring: false, skipLauncher: false, directLaunchReminder: true, autoUpdates: true, startupMode: 'off' });
-  const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus>({ enabled: true, configured: false, state: 'unconfigured', currentVersion: '0.9.27', message: 'Checking update configuration…' });
+  const [preferences, setPreferences] = useState<AppPreferences>({ theme: 'nebula', rivalsDataMode: 'api', discordRichPresence: true, quickSwitchShortcut: false, quickAccessShortcut: 'CommandOrControl+Shift+R', closeAction: 'ask', matchNotifications: true, backgroundMonitoring: false, skipLauncher: false, directLaunchReminder: true, autoUpdates: true, privacyMode: false, startupMode: 'off' });
+  const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus>({ enabled: true, configured: false, state: 'unconfigured', currentVersion: '0.9.39', message: 'Checking update configuration…' });
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState('');
+  const [installingUpdate, setInstallingUpdate] = useState(false);
   const [appPrompt, setAppPrompt] = useState<AppPrompt | null>(null);
   const [rememberPromptChoice, setRememberPromptChoice] = useState(false);
   const [respondingToPrompt, setRespondingToPrompt] = useState(false);
@@ -118,6 +126,7 @@ export function App() {
   const [playerResults, setPlayerResults] = useState<TrackedPlayer[]>([]);
   const [playerQuery, setPlayerQuery] = useState('');
   const [searchingPlayers, setSearchingPlayers] = useState(false);
+  const [playerAutoRefresh, setPlayerAutoRefresh] = useState(false);
   const [refreshingFavorites, setRefreshingFavorites] = useState(false);
   const [topSnipers, setTopSnipers] = useState<TopSniperPlayer[]>([]);
   const [topSniperLoading, setTopSniperLoading] = useState(false);
@@ -134,12 +143,13 @@ export function App() {
   const postMatchGeneration = useRef(0);
   const postMatchRefreshInFlight = useRef(false);
   const topSniperRefreshInFlight = useRef(false);
+  const playerSearchInFlight = useRef(false);
 
   const refresh = async (refreshPlayers = false) => {
     setLoading(true);
     try {
-      const [steam, linked, savedPath, launcherSkip, extension, savedPreferences, running, savedPlayers, updater] = await Promise.all([
-        api.listAccounts(), api.getProfiles(), api.getStoragePath(), api.getLauncherSkipStatus(), api.getRivalsDataExtensionStatus(), api.getPreferences(), api.isGameRunning(), api.getFavoritePlayers(), api.getUpdateStatus(),
+      const [steam, linked, savedPath, launcherSkip, extension, savedPreferences, running, savedPlayers, updater, hidden] = await Promise.all([
+        api.listAccounts(), api.getProfiles(), api.getStoragePath(), api.getLauncherSkipStatus(), api.getRivalsDataExtensionStatus(), api.getPreferences(), api.isGameRunning(), api.getFavoritePlayers(), api.getUpdateStatus(), api.getHiddenAccounts(),
       ]);
       setSnapshot(steam);
       setProfiles(linked);
@@ -150,9 +160,10 @@ export function App() {
       setGameRunning(running);
       setFavoritePlayers(savedPlayers);
       setUpdateStatus(updater);
-      setSelectedId((current) => current && steam.accounts.some((account) => account.steamId64 === current)
+      setHiddenAccounts(hidden);
+      setSelectedId((current) => current && steam.accounts.some((account) => account.steamId64 === current && !hidden.includes(account.steamId64))
         ? current
-        : (steam.accounts.find((account) => account.currentSession) ?? steam.accounts[0])?.steamId64 ?? '');
+        : (steam.accounts.find((account) => account.currentSession && !hidden.includes(account.steamId64)) ?? steam.accounts.find((account) => !hidden.includes(account.steamId64)))?.steamId64 ?? '');
       if (refreshPlayers && Object.values(linked).some(hasIdentity)) {
         setToast(`Refreshing linked profiles through Rivals Data ${savedPreferences.rivalsDataMode === 'api' ? 'SDK API' : 'browser extension'}...`);
         const refreshed = await api.refreshAllProfiles();
@@ -170,6 +181,7 @@ export function App() {
   useEffect(() => { localStorage.setItem('rival-shift-account-sort', sortOrder); }, [sortOrder]);
   useEffect(() => { localStorage.setItem('rival-shift-sidebar-expanded', String(railExpanded)); }, [railExpanded]);
   useEffect(() => { document.documentElement.dataset.theme = preferences.theme; }, [preferences.theme]);
+  useEffect(() => { void api.isWindowMaximized().then(setWindowMaximized); return api.onWindowMaximized(setWindowMaximized); }, []);
   useEffect(() => api.onPreferencesChanged(setPreferences), []);
   useEffect(() => api.onUpdateStatus(setUpdateStatus), []);
   useEffect(() => api.onGameLaunchReminder(setToast), []);
@@ -197,33 +209,38 @@ export function App() {
   }, [activeTab, favoritePlayers.length]);
 
   const availableRanks = useMemo(() => rankFilterOptions(profiles), [profiles]);
+  const availableGroups = useMemo(() => [...new Set(Object.values(profiles).map((item) => item.group?.trim()).filter((item): item is string => Boolean(item)))].sort((a, b) => a.localeCompare(b)), [profiles]);
   const accounts = useMemo(() => sortAccounts(snapshot.accounts.filter((account) => {
+    if (hiddenAccounts.includes(account.steamId64)) return false;
     const linked = profiles[account.steamId64];
     const matchesSearch = `${account.personaName} ${account.accountName} ${linked?.inGameName ?? ''} ${linked?.uid ?? ''} ${linked?.stats?.rank ?? ''}`.toLowerCase().includes(search.trim().toLowerCase());
-    return matchesSearch && accountMatchesRankFilter(linked, rankFilter);
-  }), profiles, sortOrder), [snapshot.accounts, profiles, search, rankFilter, sortOrder]);
+    const matchesGroup = groupFilter === 'all' || (groupFilter === 'ungrouped' ? !linked?.group?.trim() : linked?.group === groupFilter);
+    return matchesSearch && matchesGroup && accountMatchesRankFilter(linked, rankFilter);
+  }), profiles, sortOrder), [snapshot.accounts, profiles, hiddenAccounts, search, rankFilter, groupFilter, sortOrder]);
 
   const selected = snapshot.accounts.find((account) => account.steamId64 === selectedId);
   const profile = selected ? profiles[selected.steamId64] : undefined;
   const currentSession = snapshot.accounts.find((account) => account.currentSession);
   const currentProfile = currentSession ? profiles[currentSession.steamId64] : undefined;
+  const resolvingHiddenLiveNames = hasMaskedLivePlayerNames(liveMatch);
   const linked = hasIdentity(profile);
-  const linkedCount = snapshot.accounts.filter((account) => hasIdentity(profiles[account.steamId64])).length;
+  const visibleAccounts = snapshot.accounts.filter((account) => !hiddenAccounts.includes(account.steamId64));
+  const linkedCount = visibleAccounts.filter((account) => hasIdentity(profiles[account.steamId64])).length;
 
   // Privacy rule: presence only uses a manually linked Marvel Rivals identity with cached player data.
   useEffect(() => {
     const presenceProfile = activeTab === 'live-game' ? currentProfile : profile;
-    const presenceName = presenceProfile?.stats ? presenceProfile.inGameName.trim() : '';
+    const presenceName = !preferences.privacyMode && presenceProfile?.stats ? presenceProfile.inGameName.trim() : '';
     const presenceRank = presenceProfile?.stats ? presenceProfile.stats.rank?.trim() || 'Unranked' : '';
     const liveGame: DiscordLivePresence | undefined = activeTab === 'live-game' ? {
       status: checkingLiveMatch ? 'checking' : liveMatch?.status || 'idle',
-      playerName: liveMatch?.playerName || presenceName,
+      playerName: preferences.privacyMode ? undefined : liveMatch?.playerName || presenceName,
       mode: liveMatch?.mode,
       elapsed: liveMatch?.elapsed,
       checkedAt: liveMatch?.checkedAt,
     } : undefined;
     void api.updateDiscordPresence(snapshot.accounts.length, presenceName, presenceRank, presenceProfile?.stats?.rankIconRemoteUrl || presenceProfile?.stats?.rankIconUrl || '', liveGame);
-  }, [activeTab, checkingLiveMatch, liveMatch?.status, liveMatch?.playerName, liveMatch?.mode, liveMatch?.elapsed, liveMatch?.checkedAt, snapshot.accounts.length, profile?.inGameName, profile?.stats?.rank, profile?.stats?.rankIconRemoteUrl, profile?.stats?.rankIconUrl, currentProfile?.inGameName, currentProfile?.stats?.rank, currentProfile?.stats?.rankIconRemoteUrl, currentProfile?.stats?.rankIconUrl]);
+  }, [activeTab, preferences.privacyMode, checkingLiveMatch, liveMatch?.status, liveMatch?.playerName, liveMatch?.mode, liveMatch?.elapsed, liveMatch?.checkedAt, snapshot.accounts.length, profile?.inGameName, profile?.stats?.rank, profile?.stats?.rankIconRemoteUrl, profile?.stats?.rankIconUrl, currentProfile?.inGameName, currentProfile?.stats?.rank, currentProfile?.stats?.rankIconRemoteUrl, currentProfile?.stats?.rankIconUrl]);
 
   const toggleFavorite = async (account: SteamAccount, current?: RivalProfile) => {
     const next: RivalProfile = current
@@ -234,6 +251,38 @@ export function App() {
       setProfiles((all) => ({ ...all, [account.steamId64]: saved }));
       setToast(saved.favorite ? 'Account added to favorites.' : 'Account removed from favorites.');
     } catch (error) { setToast(error instanceof Error ? error.message : 'Could not update favorite.'); }
+  };
+
+  const saveAccountGroup = async (account: SteamAccount, group: string) => {
+    const current = profiles[account.steamId64];
+    const next: RivalProfile = current
+      ? { ...current, group: group.trim() || undefined }
+      : { steamId64: account.steamId64, uid: '', inGameName: '', note: '', favorite: false, group: group.trim() || undefined, updatedAt: new Date().toISOString(), status: 'unlinked' };
+    try {
+      const saved = await api.saveProfile(next);
+      setProfiles((all) => ({ ...all, [account.steamId64]: saved }));
+      setGroupEditor(null);
+      setToast(saved.group ? `${account.personaName} moved to ${saved.group}.` : `${account.personaName} removed from its group.`);
+    } catch (error) { setToast(error instanceof Error ? error.message : 'Could not update the account group.'); }
+  };
+
+  const confirmRemoveAccount = async () => {
+    if (!removeAccount) return;
+    try {
+      const hidden = await api.hideAccount(removeAccount.steamId64);
+      setHiddenAccounts(hidden);
+      if (selectedId === removeAccount.steamId64) setSelectedId(visibleAccounts.find((account) => account.steamId64 !== removeAccount.steamId64)?.steamId64 ?? '');
+      setRemoveAccount(null);
+      setAccountView('library');
+      setToast('Account removed from Rival Shift. Its Steam login and saved profile were not deleted.');
+    } catch (error) { setToast(error instanceof Error ? error.message : 'Could not remove the account.'); }
+  };
+
+  const restoreRemovedAccounts = async () => {
+    try {
+      setHiddenAccounts(await api.restoreHiddenAccounts());
+      setToast('Removed accounts are visible in the hub again.');
+    } catch (error) { setToast(error instanceof Error ? error.message : 'Could not restore removed accounts.'); }
   };
 
   const syncPlayer = async (steamId64: string) => {
@@ -322,6 +371,12 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [liveSearchActive, checkingLiveMatch, currentSession?.steamId64, liveMatch?.checkedAt]);
 
+  useEffect(() => {
+    if (!resolvingHiddenLiveNames || checkingLiveMatch || !currentSession) return;
+    const timer = window.setTimeout(() => void checkLiveMatch('refresh'), 15_000);
+    return () => window.clearTimeout(timer);
+  }, [resolvingHiddenLiveNames, checkingLiveMatch, currentSession?.steamId64, liveMatch?.checkedAt]);
+
   useEffect(() => api.onQuickAccess(() => {
     setActiveTab('live-game');
     setLiveSearchActive(true);
@@ -370,13 +425,22 @@ export function App() {
   const searchPlayers = async () => {
     const query = playerQuery.trim();
     if (query.length < 2) { setToast('Enter at least two characters or a complete Marvel Rivals UID.'); return; }
+    if (playerSearchInFlight.current) return;
+    playerSearchInFlight.current = true;
     setSearchingPlayers(true);
     try {
       const favorites = new Set(favoritePlayers.map((player) => player.uid));
       setPlayerResults((await api.searchRivalsDataPlayers(query)).map((player) => ({ ...player, favorite: favorites.has(player.uid) })));
     } catch (error) { setToast(error instanceof Error ? error.message : 'Could not search Rivals Data.'); }
-    finally { setSearchingPlayers(false); }
+    finally { playerSearchInFlight.current = false; setSearchingPlayers(false); }
   };
+
+  useEffect(() => {
+    if (activeTab !== 'players' || !playerAutoRefresh || playerQuery.trim().length < 2) return;
+    void searchPlayers();
+    const timer = window.setInterval(() => void searchPlayers(), 3_000);
+    return () => window.clearInterval(timer);
+  }, [activeTab, playerAutoRefresh, playerQuery]);
 
   const togglePlayerFavorite = async (player: TrackedPlayer) => {
     try {
@@ -480,11 +544,12 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [activeTab, topSniperActive]);
 
-  return <div className={`app-shell ${railExpanded ? 'rail-expanded' : ''}`}>
-    <div className="titlebar"><div className="titlebar-mark"><span>R</span> RIVAL SHIFT</div><span className="titlebar-sub">MARVEL RIVALS ACCOUNT HUB</span></div>
+  return <div className={`app-shell ${railExpanded ? 'rail-expanded' : ''} ${preferences.privacyMode ? 'privacy-mode' : ''}`}>
+    <div className="titlebar"><div className="titlebar-mark"><span>R</span><b>RIVAL SHIFT</b></div><span className="titlebar-sub">MARVEL RIVALS ACCOUNT HUB</span><div className="titlebar-actions"><button className={`title-privacy ${preferences.privacyMode ? 'active' : ''}`} onClick={() => void updatePreference('privacyMode', !preferences.privacyMode)} title={preferences.privacyMode ? 'Turn privacy mode off' : 'Hide player names and UIDs'}><span className="privacy-led" /><LockKeyhole size={13} /><b>{preferences.privacyMode ? 'Privacy on' : 'Privacy'}</b></button><div className="window-controls" aria-label="Window controls"><button aria-label="Minimize" title="Minimize" onClick={() => void api.minimizeWindow()}><Minimize2 size={14} /></button><button aria-label={windowMaximized ? 'Restore window' : 'Maximize'} title={windowMaximized ? 'Restore window' : 'Maximize'} onClick={async () => setWindowMaximized(await api.toggleMaximizeWindow())}>{windowMaximized ? <PanelLeftClose size={13} /> : <Maximize2 size={13} />}</button><button className="window-close" aria-label="Close" title="Close" onClick={() => void api.closeWindow()}><X size={15} /></button></div></div></div>
     <aside className="rail" aria-label="Main navigation">
       <nav>
         <button className={`rail-button ${activeTab === 'accounts' ? 'active' : ''}`} aria-label="Accounts" title="Accounts" onClick={() => { setActiveTab('accounts'); setAccountView('library'); }}><House size={20} /><span>Accounts</span></button>
+        <button className={`rail-button ${activeTab === 'intelligence' ? 'active' : ''}`} aria-label="Hero intelligence" title="Hero intelligence" onClick={() => setActiveTab('intelligence')}><Sparkles size={20} /><span>Heroes</span></button>
         <button className={`rail-button ${activeTab === 'players' ? 'active' : ''}`} aria-label="Player search" title="Player search" onClick={() => setActiveTab('players')}><Users size={20} /><span>Players</span></button>
         <button className={`rail-button ${activeTab === 'top-sniper' ? 'active' : ''}`} aria-label="Top sniper" title="Top sniper" onClick={() => setActiveTab('top-sniper')}><Crosshair size={20} /><span>Top sniper</span></button>
         <button className={`rail-button ${activeTab === 'live-game' ? 'active' : ''}`} aria-label="Live game" title="Live game" onClick={openLiveGame}><Radio size={20} /><span>Live game</span></button>
@@ -499,21 +564,26 @@ export function App() {
 
     {activeTab === 'accounts' ? <main className={`workspace ${accountView === 'library' ? 'account-library-mode' : 'account-details-mode'}`}>
       {accountView === 'library' ? <section className="accounts-pane accounts-home-pane">
-        <header className="pane-header"><div><span className="eyebrow">STEAM LIBRARY</span><h1>Your accounts</h1><p className="pane-subtitle">Double-click an account to open its full profile.</p></div><div className="pane-actions"><button className="add-account-button" onClick={() => void addSteamAccount()}><UserPlus size={15} /> Add account</button><button className="icon-button" onClick={() => void refresh(true)} aria-label="Refresh Steam and linked player data" title="Refresh Steam and player data"><RefreshCw size={17} className={loading ? 'spin' : ''} /></button></div></header>
-        <div className="summary-strip"><div><b>{snapshot.accounts.length}</b><span>Steam accounts</span></div><div><b>{linkedCount}</b><span>Profiles linked</span></div></div>
-        <label className="search-field"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, account or UID..." /></label>
-        <div className="account-controls" aria-label="Account ordering and filters">
-          <SlidersHorizontal size={14} />
-          <label><span>Rank</span><select aria-label="Filter accounts by rank" value={rankFilter} onChange={(event) => setRankFilter(event.target.value)}><option value="all">All ranks</option><option value="ranked">Ranked only</option><option value="unranked">Unranked</option>{availableRanks.map((tier) => <option value={tier} key={tier}>{tier}</option>)}</select></label>
-          <label><span>Order</span><select aria-label="Order accounts" value={sortOrder} onChange={(event) => setSortOrder(event.target.value as AccountSort)}><option value="rank-desc">Rank: highest</option><option value="rank-asc">Rank: lowest</option><option value="favorites">Favorites</option><option value="win-rate">Win rate</option><option value="level">Level</option><option value="recent">Recently used</option><option value="name">Name</option></select></label>
+        <header className="pane-header"><div><span className="eyebrow">STEAM LIBRARY</span><h1>Your accounts</h1><p className="pane-subtitle">Use Open stats on any account card to view its full profile.</p></div><div className="pane-actions"><button className="add-account-button" onClick={() => void addSteamAccount()}><UserPlus size={15} /> Add account</button><button className="icon-button" onClick={() => void refresh(true)} aria-label="Refresh Steam and linked player data" title="Refresh Steam and player data"><RefreshCw size={17} className={loading ? 'spin' : ''} /></button></div></header>
+        <div className="account-explorer" aria-label="Search, filter, and order accounts">
+          <div className="account-explorer-heading"><div><SlidersHorizontal size={14} /><span><b>Browse your library</b><small>{visibleAccounts.length} accounts · {linkedCount} linked</small></span></div><strong>{accounts.length} shown</strong></div>
+          <div className="account-explorer-tools">
+            <label className="account-search"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, Steam account, or UID" />{search && <button aria-label="Clear search" title="Clear search" onClick={() => setSearch('')}><X size={13} /></button>}</label>
+            <div className="account-filter-row">
+              <label><span>Rank</span><select aria-label="Filter accounts by rank" value={rankFilter} onChange={(event) => setRankFilter(event.target.value)}><option value="all">All ranks</option><option value="ranked">Ranked only</option><option value="unranked">Unranked</option>{availableRanks.map((tier) => <option value={tier} key={tier}>{tier}</option>)}</select></label>
+              <label><span>Group</span><select aria-label="Filter accounts by group" value={groupFilter} onChange={(event) => setGroupFilter(event.target.value)}><option value="all">All groups</option><option value="ungrouped">Ungrouped</option>{availableGroups.map((group) => <option value={group} key={group}>{group}</option>)}</select></label>
+              <label><span>Sort</span><select aria-label="Order accounts" value={sortOrder} onChange={(event) => setSortOrder(event.target.value as AccountSort)}><option value="rank-desc">Highest rank</option><option value="rank-asc">Lowest rank</option><option value="favorites">Favorites</option><option value="win-rate">Win rate</option><option value="level">Level</option><option value="recent">Recently used</option><option value="name">Name</option></select></label>
+            </div>
+            {(search || rankFilter !== 'all' || groupFilter !== 'all' || sortOrder !== 'rank-desc') && <button className="account-filter-reset" onClick={() => { setSearch(''); setRankFilter('all'); setGroupFilter('all'); setSortOrder('rank-desc'); }}><X size={12} /> Reset</button>}
+          </div>
         </div>
         {snapshot.error && <div className="inline-warning"><ShieldCheck size={17} /><span>{snapshot.error}</span></div>}
         <div className="account-list" tabIndex={0} role="region" aria-label="Steam account library">
           {loading && [1, 2, 3, 4].map((key) => <div className="account-skeleton" key={key} />)}
-          {!loading && accounts.map((account, index) => <AccountCard key={account.steamId64} account={account} profile={profiles[account.steamId64]} active={selectedId === account.steamId64} index={index} launching={quickLaunching === account.steamId64} launchDisabled={Boolean(quickLaunching) || (account.currentSession && gameRunning)} onClick={() => setSelectedId(account.steamId64)} onOpen={() => { setSelectedId(account.steamId64); setAccountView('details'); }} onFavorite={() => void toggleFavorite(account, profiles[account.steamId64])} onQuickLaunch={() => void quickLaunchAccount(account)} />)}
+          {!loading && accounts.map((account, index) => <AccountCard key={account.steamId64} account={account} profile={profiles[account.steamId64]} active={selectedId === account.steamId64} index={index} launching={quickLaunching === account.steamId64} launchDisabled={Boolean(quickLaunching) || (account.currentSession && gameRunning)} onClick={() => setSelectedId(account.steamId64)} onOpen={() => { setSelectedId(account.steamId64); setAccountView('details'); }} onFavorite={() => void toggleFavorite(account, profiles[account.steamId64])} onGroup={() => setGroupEditor(account)} onRemove={() => setRemoveAccount(account)} onQuickLaunch={() => void quickLaunchAccount(account)} />)}
           {!loading && !accounts.length && <div className="empty-list"><Gamepad2 size={26} /><b>No accounts found</b><span>{search || rankFilter !== 'all' ? 'No account matches your search and filters.' : 'Add a Steam login, select Remember me, then refresh.'}</span>{!search && rankFilter === 'all' && <button className="primary-button compact" onClick={() => void addSteamAccount()}><UserPlus size={14} /> Add Steam account</button>}</div>}
         </div>
-        <footer className="pane-footer"><span className="status-dot" />{snapshot.steamRoot ? 'Steam connected' : 'Steam not detected'}<button className="footer-presence" onClick={() => setActiveTab('settings')}><Settings size={11} /> Settings</button><span>v0.9.27</span></footer>
+        <footer className="pane-footer"><span className="status-dot" />{snapshot.steamRoot ? 'Steam connected' : 'Steam not detected'}{hiddenAccounts.length > 0 && <button className="footer-presence" onClick={() => void restoreRemovedAccounts()}><RefreshCw size={11} /> Restore {hiddenAccounts.length} removed</button>}<button className="footer-presence" onClick={() => setActiveTab('settings')}><Settings size={11} /> Settings</button><span>v0.9.39</span></footer>
       </section> :
 
       <section className="detail-pane account-detail-page">
@@ -525,7 +595,7 @@ export function App() {
           </header>
           <div className="detail-scroll" tabIndex={0} role="region" aria-label="Selected account details">
             <section className="identity-card">
-              <AccountAvatar account={selected} name={profile?.inGameName || selected.personaName} className="identity-avatar" />
+              <AccountAvatar account={selected} profile={profile} name={profile?.inGameName || selected.personaName} className="identity-avatar" />
               <div className="identity-copy"><div className="identity-flags">{selected.currentSession && <span className="live-chip"><i /> CURRENT SESSION</span>}{linked && <span className="data-chip"><Database size={12} /> SAVED LOCALLY</span>}</div><h2>{profile?.inGameName || selected.personaName}</h2><p>@{selected.accountName} <span>·</span> Steam ID {shortId(selected.steamId64)}</p>{profile?.note && <div className="identity-note">{profile.note}</div>}</div>
               <button className={`favorite-button ${profile?.favorite ? 'active' : ''}`} aria-label={profile?.favorite ? 'Remove favorite' : 'Add favorite'} onClick={() => void toggleFavorite(selected, profile)}><Star size={19} fill={profile?.favorite ? 'currentColor' : 'none'} /></button>
             </section>
@@ -546,7 +616,7 @@ export function App() {
           </div>
         </> : <div className="no-selection"><Swords /><h2>Select an account</h2><p>Choose a Steam account from the grid.</p></div>}
       </section>}
-    </main> : activeTab === 'players' ? <PlayerSearchPage query={playerQuery} setQuery={setPlayerQuery} results={playerResults} favorites={favoritePlayers} searching={searchingPlayers} refreshing={refreshingFavorites} onSearch={searchPlayers} onToggleFavorite={togglePlayerFavorite} onRefreshFavorites={refreshPlayerFavorites} onOpenProfile={(uid) => api.openPlayerProfile(uid)} /> : activeTab === 'top-sniper' ? <TopSniperPage players={topSnipers} loading={topSniperLoading} active={topSniperActive} error={topSniperError} updatedAt={topSniperUpdatedAt} onStart={() => setTopSniperActive(true)} onStop={() => setTopSniperActive(false)} onRefresh={refreshTopSnipers} onOpenProfile={(uid) => api.openPlayerProfile(uid)} /> : activeTab === 'live-game' ? <LiveGamePage account={currentSession} profile={currentProfile} snapshot={liveMatch} loading={checkingLiveMatch} searching={liveSearchActive} onStart={startLiveSearch} onStop={stopLiveSearch} onRefresh={() => void checkLiveMatch('refresh')} onRecheck={startLiveSearch} onForceRefresh={startLiveSearch} onAccounts={() => setActiveTab('accounts')} /> : activeTab === 'post-match' ? <PostMatchPage capturedPlayers={postMatchSourcePlayers(lastCapturedMatch)} selectedUids={postMatchSelectedUids} players={postMatchPlayers} looking={postMatchLooking} refreshing={postMatchRefreshing} onTogglePlayer={togglePostMatchPlayer} onSelectAll={() => setPostMatchSelectedUids(postMatchSourcePlayers(lastCapturedMatch).map((player) => player.uid))} onClearSelection={() => setPostMatchSelectedUids([])} onStart={startPostMatchLookup} onStop={stopPostMatchLookup} /> : <SettingsPage extension={extensionStatus} launcherSkip={launcherSkipStatus} updateStatus={updateStatus} preferences={preferences} onBack={() => setActiveTab('accounts')} onRefreshExtension={async () => setExtensionStatus(await api.getRivalsDataExtensionStatus())} onOpenExtensionFolder={() => api.openRivalsDataExtensionFolder()} onSetLauncherSkip={async (enabled) => { try { const status = await api.setLauncherSkip(enabled); setLauncherSkipStatus(status); setToast(status.message); } catch (error) { setToast(error instanceof Error ? error.message : 'Could not change launcher skip.'); } }} onSetPreference={updatePreference} onCheckUpdates={async () => setUpdateStatus(await api.checkForUpdates())} onInstallUpdate={() => api.installUpdate()} onBackup={() => setModal('backup')} />}
+    </main> : activeTab === 'intelligence' ? <HeroIntelligencePage accounts={snapshot.accounts} profiles={profiles} onAccounts={() => setActiveTab('accounts')} /> : activeTab === 'players' ? <PlayerSearchPage query={playerQuery} setQuery={setPlayerQuery} results={playerResults} favorites={favoritePlayers} searching={searchingPlayers} refreshing={refreshingFavorites} autoRefresh={playerAutoRefresh} onToggleAutoRefresh={() => setPlayerAutoRefresh((active) => !active)} onSearch={searchPlayers} onToggleFavorite={togglePlayerFavorite} onRefreshFavorites={refreshPlayerFavorites} onOpenProfile={(uid) => api.openPlayerProfile(uid)} /> : activeTab === 'top-sniper' ? <TopSniperPage players={topSnipers} loading={topSniperLoading} active={topSniperActive} error={topSniperError} updatedAt={topSniperUpdatedAt} onStart={() => setTopSniperActive(true)} onStop={() => setTopSniperActive(false)} onRefresh={refreshTopSnipers} onOpenProfile={(uid) => api.openPlayerProfile(uid)} /> : activeTab === 'live-game' ? <LiveGamePage account={currentSession} profile={currentProfile} snapshot={liveMatch} loading={checkingLiveMatch} searching={liveSearchActive} onStart={startLiveSearch} onStop={stopLiveSearch} onRefresh={() => void checkLiveMatch('refresh')} onRecheck={startLiveSearch} onForceRefresh={startLiveSearch} onAccounts={() => setActiveTab('accounts')} /> : activeTab === 'post-match' ? <PostMatchPage capturedPlayers={postMatchSourcePlayers(lastCapturedMatch)} selectedUids={postMatchSelectedUids} players={postMatchPlayers} looking={postMatchLooking} refreshing={postMatchRefreshing} onTogglePlayer={togglePostMatchPlayer} onSelectAll={() => setPostMatchSelectedUids(postMatchSourcePlayers(lastCapturedMatch).map((player) => player.uid))} onClearSelection={() => setPostMatchSelectedUids([])} onStart={startPostMatchLookup} onStop={stopPostMatchLookup} /> : <SettingsPage extension={extensionStatus} launcherSkip={launcherSkipStatus} updateStatus={updateStatus} preferences={preferences} onBack={() => setActiveTab('accounts')} onRefreshExtension={async () => setExtensionStatus(await api.getRivalsDataExtensionStatus())} onOpenExtensionFolder={() => api.openRivalsDataExtensionFolder()} onSetLauncherSkip={async (enabled) => { try { const status = await api.setLauncherSkip(enabled); setLauncherSkipStatus(status); setToast(status.message); } catch (error) { setToast(error instanceof Error ? error.message : 'Could not change launcher skip.'); } }} onSetPreference={updatePreference} onCheckUpdates={async () => setUpdateStatus(await api.checkForUpdates())} onInstallUpdate={() => api.installUpdate()} onBackup={() => setModal('backup')} />}
 
     {modal === 'link' && selected && <ProfileModal account={selected} profile={profile} storagePath={storagePath} onClose={() => setModal(null)} onSave={async (next) => {
       const saved = await api.saveProfile(next);
@@ -558,9 +628,81 @@ export function App() {
     {modal === 'history' && selected && <HistoryModal name={profile?.inGameName || selected.personaName} profile={profile} onClose={() => setModal(null)} />}
     {modal === 'backup' && <BackupModal onClose={() => setModal(null)} onExport={async (passphrase) => { try { const result = await api.exportProfiles(passphrase); if (!result.canceled) setToast(`Encrypted backup saved to ${result.path}.`); } catch (error) { setToast(error instanceof Error ? error.message : 'Could not export the encrypted backup.'); } }} onImport={async (passphrase) => { try { const result = await api.importProfiles(passphrase); if (!result.canceled) { setProfiles(result.profiles); setToast(`Imported ${result.count} profiles from the encrypted backup.`); } } catch (error) { setToast(error instanceof Error ? error.message : 'Could not import the encrypted backup.'); } }} />}
     {modal === 'about' && <AboutModal onClose={() => setModal(null)} />}
+    {updateStatus.state === 'downloaded' && updateStatus.availableVersion && dismissedUpdateVersion !== updateStatus.availableVersion && <UpdateReadyModal version={updateStatus.availableVersion} installing={installingUpdate} onLater={() => setDismissedUpdateVersion(updateStatus.availableVersion || '')} onInstall={async () => { setInstallingUpdate(true); try { await api.installUpdate(); } catch (error) { setInstallingUpdate(false); setToast(error instanceof Error ? error.message : 'Could not install the downloaded update.'); } }} />}
+    {groupEditor && <GroupModal account={groupEditor} current={profiles[groupEditor.steamId64]?.group || ''} groups={availableGroups} onClose={() => setGroupEditor(null)} onSave={(group) => void saveAccountGroup(groupEditor, group)} />}
+    {removeAccount && <RemoveAccountModal account={removeAccount} profile={profiles[removeAccount.steamId64]} onClose={() => setRemoveAccount(null)} onConfirm={() => void confirmRemoveAccount()} />}
     {appPrompt && <SystemPromptModal prompt={appPrompt} remember={rememberPromptChoice} setRemember={setRememberPromptChoice} working={respondingToPrompt} onChoose={(choice) => void answerAppPrompt(choice)} />}
     {toast && <div className="toast"><Check size={16} /><span>{toast}</span><button onClick={() => setToast('')}><X size={14} /></button></div>}
   </div>;
+}
+
+function accountHealth(account: SteamAccount, profile?: RivalProfile) {
+  const issues: string[] = [];
+  let score = 100;
+  if (!account.remembered) { score -= 25; issues.push('Steam did not mark this login as remembered'); }
+  if (!hasIdentity(profile)) { score -= 30; issues.push('Marvel Rivals profile is not linked'); }
+  if (profile?.status === 'error') { score -= 25; issues.push(profile.error || 'Latest RivalsData refresh failed'); }
+  if (hasIdentity(profile) && !profile?.stats) { score -= 15; issues.push('Player stats have not been loaded'); }
+  if (hasIdentity(profile) && !profile?.uid.trim()) { score -= 10; issues.push('UID is missing'); }
+  const syncedAt = profile?.stats?.syncedAt || profile?.updatedAt;
+  if (profile?.stats && syncedAt && Date.now() - new Date(syncedAt).getTime() > 7 * 86_400_000) { score -= 15; issues.push('Cached data is over seven days old'); }
+  const normalized = Math.max(0, score);
+  return { score: normalized, issues, tone: normalized >= 80 ? 'good' : normalized >= 55 ? 'warn' : 'bad' } as const;
+}
+
+function DashboardHeader({ eyebrow, title, description, onAccounts }: { eyebrow: string; title: string; description: string; onAccounts: () => void }) {
+  return <header className="dashboard-header"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1><p>{description}</p></div><button className="secondary-button" onClick={onAccounts}><ChevronRight className="back-chevron" size={15} /> Accounts</button></header>;
+}
+
+function AccountComparisonPage({ accounts, profiles, selectedIds, onToggle, onAccounts }: { accounts: SteamAccount[]; profiles: Record<string, RivalProfile>; selectedIds: string[]; onToggle: (id: string) => void; onAccounts: () => void }) {
+  const selected = selectedIds.map((id) => accounts.find((account) => account.steamId64 === id)).filter((account): account is SteamAccount => Boolean(account));
+  const metrics = [
+    { label: 'Rank', value: (profile?: RivalProfile) => profile?.stats?.rank || 'Unranked' },
+    { label: 'Rank score', value: (profile?: RivalProfile) => profile?.stats?.rankScore?.toLocaleString() ?? '—' },
+    { label: 'Win rate', value: (profile?: RivalProfile) => profile?.stats?.winRate != null ? `${profile.stats.winRate}%` : '—' },
+    { label: 'Record', value: (profile?: RivalProfile) => profile?.stats?.wins != null ? `${profile.stats.wins}W · ${profile.stats.losses ?? 0}L` : '—' },
+    { label: 'Matches', value: (profile?: RivalProfile) => profile?.stats?.matches?.toLocaleString() ?? '—' },
+    { label: 'Level', value: (profile?: RivalProfile) => profile?.stats?.level?.toLocaleString() ?? '—' },
+    { label: 'Best hero', value: (profile?: RivalProfile) => [...(profile?.stats?.heroStats ?? [])].sort((a, b) => (b.winRate ?? 0) - (a.winRate ?? 0))[0]?.name || profile?.stats?.heroes?.[0] || '—' },
+    { label: 'Inventory', value: (profile?: RivalProfile) => profile?.stats?.skinInventoryValue != null ? `${profile.stats.skinInventoryValue.toLocaleString()} units` : '—' },
+  ];
+  return <main className="dashboard-page compare-page"><DashboardHeader eyebrow="ACCOUNT LAB" title="Compare accounts" description="Select up to four accounts and see their progression side by side." onAccounts={onAccounts} /><div className="dashboard-scroll">
+    <section className="compare-picker"><div className="section-inline-title"><div><b>Choose accounts</b><span>{selected.length}/4 selected</span></div>{selected.length >= 4 && <small>Remove one to choose another.</small>}</div><div className="compare-choices">{accounts.map((account, index) => { const profile = profiles[account.steamId64]; const checked = selectedIds.includes(account.steamId64); return <button key={account.steamId64} className={checked ? 'selected' : ''} disabled={!checked && selected.length >= 4} onClick={() => onToggle(account.steamId64)}><AccountAvatar account={account} profile={profile} name={profile?.inGameName || account.personaName} className={`compare-avatar tint-${index % 4}`} /><span><b>{profile?.inGameName || account.personaName}</b><small>{profile?.stats?.rank || 'Unranked'}</small></span><i>{checked && <Check size={12} />}</i></button>; })}</div></section>
+    {selected.length < 2 ? <div className="dashboard-empty"><SlidersHorizontal size={30} /><b>Select at least two accounts</b><span>The comparison table appears once two accounts are selected.</span></div> : <section className="comparison-table"><div className="comparison-row comparison-head"><span>METRIC</span>{selected.map((account, index) => <div key={account.steamId64}><AccountAvatar account={account} profile={profiles[account.steamId64]} name={profiles[account.steamId64]?.inGameName || account.personaName} className={`compare-head-avatar tint-${index % 4}`} /><b>{profiles[account.steamId64]?.inGameName || account.personaName}</b></div>)}</div>{metrics.map((metric) => <div className="comparison-row" key={metric.label}><span>{metric.label}</span>{selected.map((account) => <b key={account.steamId64}>{metric.value(profiles[account.steamId64])}</b>)}</div>)}</section>}
+  </div></main>;
+}
+
+function AccountHealthPage({ accounts, profiles, onOpen, onAccounts }: { accounts: SteamAccount[]; profiles: Record<string, RivalProfile>; onOpen: (id: string) => void; onAccounts: () => void }) {
+  const reports = accounts.map((account) => ({ account, profile: profiles[account.steamId64], health: accountHealth(account, profiles[account.steamId64]) })).sort((a, b) => a.health.score - b.health.score);
+  const ready = reports.filter((item) => item.health.score >= 80).length;
+  return <main className="dashboard-page health-page"><DashboardHeader eyebrow="ACCOUNT HEALTH" title="Everything ready to play" description="See connection, identity, freshness, and Steam readiness in one place." onAccounts={onAccounts} /><div className="dashboard-scroll"><div className="health-summary"><div className="health-ring"><b>{accounts.length ? Math.round(reports.reduce((sum, item) => sum + item.health.score, 0) / accounts.length) : 0}%</b><span>Overall health</span></div><div><b>{ready}</b><span>Ready accounts</span></div><div><b>{reports.filter((item) => !hasIdentity(item.profile)).length}</b><span>Need linking</span></div><div><b>{reports.filter((item) => item.profile?.status === 'error').length}</b><span>Refresh errors</span></div></div><div className="health-grid">{reports.map(({ account, profile, health }, index) => <article className={`health-card health-${health.tone}`} key={account.steamId64}><div className="health-card-head"><AccountAvatar account={account} profile={profile} name={profile?.inGameName || account.personaName} className={`health-avatar tint-${index % 4}`} /><div><b>{profile?.inGameName || account.personaName}</b><span>{profile?.group || 'Ungrouped'} · {profile?.stats?.rank || 'Unranked'}</span></div><strong>{health.score}%</strong></div><div className="health-track"><i style={{ width: `${health.score}%` }} /></div>{health.issues.length ? <ul>{health.issues.map((issue) => <li key={issue}><X size={10} /> {issue}</li>)}</ul> : <div className="health-ready"><Check size={13} /> Account is linked, fresh, and ready.</div>}<button onClick={() => onOpen(account.steamId64)}>Open account <ChevronRight size={13} /></button></article>)}</div></div></main>;
+}
+
+function HeroIntelligencePage({ accounts, profiles, onAccounts }: { accounts: SteamAccount[]; profiles: Record<string, RivalProfile>; onAccounts: () => void }) {
+  const rows = new Map<string, { name: string; iconUrl?: string; matches: number; weightedWinRate: number; weightedKda: number; accounts: number }>();
+  for (const account of accounts) for (const hero of profiles[account.steamId64]?.stats?.heroStats ?? []) {
+    const matches = Math.max(1, hero.matches ?? ((hero.wins ?? 0) + (hero.losses ?? 0)));
+    const current = rows.get(hero.name) ?? { name: hero.name, iconUrl: hero.iconUrl, matches: 0, weightedWinRate: 0, weightedKda: 0, accounts: 0 };
+    current.matches += matches; current.weightedWinRate += (hero.winRate ?? 0) * matches; current.weightedKda += (hero.kda ?? 0) * matches; current.accounts += 1; current.iconUrl ||= hero.iconUrl; rows.set(hero.name, current);
+  }
+  const heroes = [...rows.values()].map((hero) => ({ ...hero, winRate: hero.weightedWinRate / hero.matches, kda: hero.weightedKda / hero.matches })).sort((a, b) => b.matches - a.matches);
+  const best = [...heroes].filter((hero) => hero.matches >= 5).sort((a, b) => b.winRate - a.winRate)[0];
+  const opportunity = [...heroes].filter((hero) => hero.matches >= 5).sort((a, b) => a.winRate - b.winRate)[0];
+  const mostPlayed = heroes[0];
+  return <main className="dashboard-page intelligence-page"><DashboardHeader eyebrow="HERO INTELLIGENCE" title="Your hero portfolio" description="Local insights calculated across the hero performance cached for every account." onAccounts={onAccounts} /><div className="dashboard-scroll">{!heroes.length ? <div className="dashboard-empty"><Sparkles size={30} /><b>No hero performance loaded</b><span>Refresh linked accounts to build recommendations from RivalsData.</span></div> : <><div className="intel-highlights"><IntelHighlight label="STRONGEST PICK" hero={best} detail={best ? `${best.winRate.toFixed(1)}% win rate across ${best.matches} matches` : 'More matches needed'} tone="good" /><IntelHighlight label="MOST EXPERIENCED" hero={mostPlayed} detail={mostPlayed ? `${mostPlayed.matches} matches across ${mostPlayed.accounts} account${mostPlayed.accounts === 1 ? '' : 's'}` : 'No data'} tone="main" /><IntelHighlight label="IMPROVEMENT FOCUS" hero={opportunity} detail={opportunity ? `${opportunity.winRate.toFixed(1)}% win rate · review recent matches` : 'More matches needed'} tone="warn" /></div><section className="hero-intel-table"><div className="hero-intel-head"><span>Hero</span><span>Accounts</span><span>Matches</span><span>Win rate</span><span>KDA</span></div>{heroes.map((hero, index) => <div className="hero-intel-row" key={hero.name}><span><i>{hero.iconUrl ? <img src={reliableRivalsAssetUrl(hero.iconUrl)} alt="" referrerPolicy="no-referrer" /> : initials(hero.name)}</i><b>{hero.name}</b><small>#{index + 1}</small></span><b>{hero.accounts}</b><b>{hero.matches}</b><span><b>{hero.winRate.toFixed(1)}%</b><i><i style={{ width: `${Math.min(100, hero.winRate)}%` }} /></i></span><b>{hero.kda ? hero.kda.toFixed(2) : '—'}</b></div>)}</section></>}</div></main>;
+}
+
+function IntelHighlight({ label, hero, detail, tone }: { label: string; hero?: { name: string; iconUrl?: string }; detail: string; tone: string }) {
+  return <article className={`intel-highlight ${tone}`}><span>{label}</span><div>{hero?.iconUrl ? <img src={reliableRivalsAssetUrl(hero.iconUrl)} alt="" referrerPolicy="no-referrer" /> : <Sparkles size={22} />}<b>{hero?.name || 'Not enough data'}</b></div><p>{detail}</p></article>;
+}
+
+function GroupModal({ account, current, groups, onClose, onSave }: { account: SteamAccount; current: string; groups: string[]; onClose: () => void; onSave: (group: string) => void }) {
+  const [group, setGroup] = useState(current);
+  return <div className="modal-backdrop"><div className="modal-card group-modal"><button className="modal-close" onClick={onClose}><X size={18} /></button><div className="modal-icon"><Plus /></div><span className="eyebrow">CUSTOM GROUP</span><h2>Organize {account.personaName}</h2><p className="modal-lead">Use an existing group or create a new one. Groups are stored locally and included in encrypted backups.</p>{groups.length > 0 && <div className="group-suggestions">{groups.map((item) => <button className={group === item ? 'active' : ''} key={item} onClick={() => setGroup(item)}>{item}</button>)}</div>}<label className="form-label"><span>Group name</span><input value={group} maxLength={32} onChange={(event) => setGroup(event.target.value)} placeholder="Main, Ranked, Practice…" autoFocus /></label><div className="modal-actions"><button className="secondary-button" onClick={() => onSave('')}>Remove group</button><button className="primary-button" onClick={() => onSave(group)} disabled={!group.trim()}>Save group</button></div></div></div>;
+}
+
+function RemoveAccountModal({ account, profile, onClose, onConfirm }: { account: SteamAccount; profile?: RivalProfile; onClose: () => void; onConfirm: () => void }) {
+  return <div className="modal-backdrop"><div className="modal-card remove-account-modal"><button className="modal-close" onClick={onClose}><X size={18} /></button><div className="modal-icon hot"><Unlink /></div><span className="eyebrow">REMOVE FROM RIVAL SHIFT</span><h2>Remove {profile?.inGameName || account.personaName}?</h2><p className="modal-lead">This account will disappear from the Rival Shift hub. Its Steam login, Marvel Rivals account, and saved profile data will not be deleted.</p><div className="remove-account-note"><ShieldCheck size={16} /><span>You can restore all removed accounts from the hub footer at any time.</span></div><div className="modal-actions"><span /><button className="secondary-button" onClick={onClose}>Cancel</button><button className="danger-button" onClick={onConfirm}><Unlink size={14} /> Remove account</button></div></div></div>;
 }
 
 function SystemPromptModal({ prompt, remember, setRemember, working, onChoose }: { prompt: AppPrompt; remember: boolean; setRemember: (value: boolean) => void; working: boolean; onChoose: (choice: 'tray' | 'quit' | 'keep' | 'restart') => void }) {
@@ -584,25 +726,30 @@ function SystemPromptModal({ prompt, remember, setRemember, working, onChoose }:
       {!closing && <div className="prompt-required"><ShieldCheck size={13} /> This decision is required to continue.</div>}
       {working && <div className="prompt-working"><LoaderCircle className="spin" size={14} /> Applying your choice…</div>}
     </div>
+
   </div>;
 }
 
-function AccountAvatar({ account, name, className }: { account: SteamAccount; name: string; className: string }) {
+function AccountAvatar({ account, profile, name, className }: { account: SteamAccount; profile?: RivalProfile; name: string; className: string }) {
   const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [account.avatarUrl]);
+  const avatarUrl = profile?.stats?.profileIconUrl || account.avatarUrl;
+  useEffect(() => setFailed(false), [avatarUrl]);
   return <div className={className}>
-    {account.avatarUrl && !failed ? <img src={account.avatarUrl} alt={`${account.personaName}'s Steam avatar`} referrerPolicy="no-referrer" onError={() => setFailed(true)} /> : <span>{initials(name)}</span>}
+    {avatarUrl && !failed ? <img src={reliableRivalsAssetUrl(avatarUrl)} alt="Player avatar" referrerPolicy="no-referrer" onError={() => setFailed(true)} /> : <span>{initials(name)}</span>}
     {className === 'identity-avatar' && <div className="avatar-ring" />}
     {account.currentSession && className.includes('account-avatar') && <i />}
   </div>;
 }
 
-function AccountCard({ account, profile, active, index, launching, launchDisabled, onClick, onOpen, onFavorite, onQuickLaunch }: { account: SteamAccount; profile?: RivalProfile; active: boolean; index: number; launching: boolean; launchDisabled: boolean; onClick: () => void; onOpen: () => void; onFavorite: () => void; onQuickLaunch: () => void }) {
+function AccountCard({ account, profile, active, index, launching, launchDisabled, onClick, onOpen, onFavorite, onGroup, onRemove, onQuickLaunch }: { account: SteamAccount; profile?: RivalProfile; active: boolean; index: number; launching: boolean; launchDisabled: boolean; onClick: () => void; onOpen: () => void; onFavorite: () => void; onGroup: () => void; onRemove: () => void; onQuickLaunch: () => void }) {
   const cardProgress = rankProgressValue(profile?.stats?.rankScore, profile?.stats?.rank, profile?.stats?.rankProgress);
+  const cardLevel = profile?.stats?.level == null ? undefined : Math.max(0, Math.min(100, profile.stats.level));
+  const peakRank = shortRankName(profile?.stats?.peakRank);
+  const peakScore = profile?.stats?.peakRankScore == null ? 'No peak data' : /^(?:E|OAA)$/.test(peakRank) ? `${profile.stats.peakRankScore} RS` : `${Math.floor(profile.stats.peakRankScore)}/100`;
   return <div className={`account-card ${active ? 'selected' : ''} ${account.currentSession ? 'current-session-card' : ''}`} role="button" tabIndex={0} onClick={onClick} onDoubleClick={onOpen} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); onOpen(); } }} title="Double-click to open account details" style={{ animationDelay: `${index * 35}ms` }}>
-    <div className="account-card-top"><AccountAvatar account={account} name={profile?.inGameName || account.personaName} className={`account-avatar tint-${index % 4}`} /><div className="account-copy"><b>{profile?.inGameName || account.personaName}</b><span>@{account.accountName}</span></div><span className={`card-favorite ${profile?.favorite ? 'active' : ''}`} role="button" tabIndex={0} aria-label="Toggle favorite" onClick={(event) => { event.stopPropagation(); onFavorite(); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); onFavorite(); } }}><Star size={15} fill={profile?.favorite ? 'currentColor' : 'none'} /></span></div>
-    <div className="account-card-stats"><span><small>RANK</small><b className="grid-rank">{(profile?.stats?.rankIconUrl || profile?.stats?.rankIconRemoteUrl) && <img className="rank-icon" src={profile.stats.rankIconUrl || profile.stats.rankIconRemoteUrl} alt="" referrerPolicy="no-referrer" />}<span className="account-rank-copy"><strong>{profile?.stats?.rank || '-'}</strong>{cardProgress != null ? <span className="account-rank-metrics"><strong>{cardProgress}/100</strong>{profile?.stats?.rankScore != null && <em>{profile.stats.rankScore} RS</em>}</span> : profile?.stats?.rankScore != null ? <span className="account-rank-metrics"><strong>{profile.stats.rankScore} RS</strong></span> : <em>Score unavailable</em>}</span></b></span><span><small>WIN RATE</small><b>{profile?.stats?.winRate != null ? `${profile.stats.winRate}%` : '-'}</b></span><span><small>LEVEL</small><b>{profile?.stats?.level ?? '-'}</b></span></div>
-    <div className="account-card-foot"><span className={account.currentSession ? 'active-session' : ''}>{account.currentSession ? 'Current session' : `Last used ${relativeTime(account.lastLogin)}`}</span><button className="account-quick-launch" disabled={launchDisabled} onClick={(event) => { event.stopPropagation(); onQuickLaunch(); }} onDoubleClick={(event) => event.stopPropagation()}>{launching ? <LoaderCircle className="spin" size={11} /> : account.currentSession && launchDisabled ? <Activity size={11} /> : <Swords size={11} />}{launching ? 'Launching…' : account.currentSession && launchDisabled ? 'Active' : 'Quick launch'}</button></div>
+    <div className="account-card-top"><AccountAvatar account={account} profile={profile} name={profile?.inGameName || account.personaName} className={`account-avatar tint-${index % 4}`} /><div className="account-copy"><b>{profile?.inGameName || account.personaName}</b><span>@{account.accountName}</span><div className="account-tags">{profile?.group && <i>{profile.group}</i>}{profile?.stats?.onlineText && <i className="presence-tag">{profile.stats.onlineText}</i>}</div></div><button className={`card-favorite ${profile?.favorite ? 'active' : ''}`} aria-label="Toggle favorite" onClick={(event) => { event.stopPropagation(); onFavorite(); }}><Star size={16} fill={profile?.favorite ? 'currentColor' : 'none'} /></button></div>
+    <div className="account-card-overview"><div className="account-rank-spotlight"><small>COMPETITIVE RANK</small><div className="grid-rank"><RankIcon profile={profile} /><span className="account-rank-copy"><strong>{profile?.stats?.rank || 'Unranked'}</strong><span className="account-rank-metrics"><strong>{cardProgress != null ? `${cardProgress}/100` : profile?.stats?.rankScore != null ? `${profile.stats.rankScore} RS` : 'No score'}</strong>{cardProgress != null && profile?.stats?.rankScore != null && <em>{profile.stats.rankScore} RS</em>}</span></span></div></div><div className="account-card-metrics"><span className="account-card-metric peak-metric" title={profile?.stats?.peakRank ? `Overall peak: ${profile.stats.peakRank}` : 'Overall peak unavailable'}><small>OVERALL PEAK</small><b>{peakRank || '—'}</b><em>{peakScore}</em></span><span className="account-card-metric"><small>WIN RATE</small><b>{profile?.stats?.winRate != null ? `${profile.stats.winRate}%` : '—'}</b><em>{profile?.stats?.matches != null ? `${profile.stats.matches} matches` : 'No match data'}</em></span><span className="account-card-metric level-metric"><small>PLAYER LEVEL</small><span className="level-value"><b>{cardLevel ?? '—'}</b>{cardLevel != null && <em>/ 100</em>}</span><span className="level-progress" role="progressbar" aria-label={cardLevel == null ? 'Player level unavailable' : `Player level ${cardLevel} out of 100`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={cardLevel}><i style={{ width: `${cardLevel ?? 0}%` }} /></span></span></div></div>
+    <div className="account-card-foot"><div className="card-state"><span className={account.currentSession ? 'active-session' : ''}>{account.currentSession ? <><i /> Current session</> : `Last used ${relativeTime(account.lastLogin)}`}</span></div><div className="card-actions"><button className="card-remove" title="Remove from Rival Shift" aria-label="Remove account from Rival Shift" onClick={(event) => { event.stopPropagation(); onRemove(); }} onDoubleClick={(event) => event.stopPropagation()}><Unlink size={12} /></button><button className="card-group" onClick={(event) => { event.stopPropagation(); onGroup(); }} onDoubleClick={(event) => event.stopPropagation()}><Plus size={11} /> {profile?.group || 'Group'}</button><button className="card-open-stats" onClick={(event) => { event.stopPropagation(); onOpen(); }} onDoubleClick={(event) => event.stopPropagation()}><Database size={11} /> Open stats</button><button className="account-quick-launch" disabled={launchDisabled} onClick={(event) => { event.stopPropagation(); onQuickLaunch(); }} onDoubleClick={(event) => event.stopPropagation()}>{launching ? <LoaderCircle className="spin" size={11} /> : account.currentSession && launchDisabled ? <Activity size={11} /> : <Swords size={11} />}{launching ? 'Launching…' : account.currentSession && launchDisabled ? 'Active' : 'Quick launch'}</button></div></div>
   </div>;
 }
 
@@ -611,7 +758,7 @@ function RankIcon({ profile }: { profile?: RivalProfile }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [url]);
   return url && !failed
-    ? <img className="rank-icon" src={url} alt="" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
+    ? <img className="rank-icon" src={reliableRivalsAssetUrl(url)} alt="" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
     : <span className="rank-icon-fallback">R</span>;
 }
 
@@ -645,11 +792,11 @@ function PlayerDataPanel({ profile, refreshing, onRefresh }: { profile?: RivalPr
     <div className="card-title"><div><span className="eyebrow">PLAYER INSIGHTS</span><h3>{tab === 'heroes' ? 'Hero performance' : tab === 'proficiency' ? 'Hero proficiency' : tab === 'skins' ? 'Skin inventory' : tab === 'matches' ? 'Detailed match history' : 'Profile intelligence'}</h3></div><Sparkles size={17} /></div>
     <div className="insight-tabs" role="tablist" aria-label="Player insights"><button role="tab" aria-selected={tab === 'heroes'} className={tab === 'heroes' ? 'active' : ''} onClick={() => setTab('heroes')}>Heroes <span>{heroStats.length}</span></button><button role="tab" aria-selected={tab === 'proficiency'} className={tab === 'proficiency' ? 'active' : ''} onClick={() => setTab('proficiency')}>Proficiency <span>{proficiency.length}</span></button><button role="tab" aria-selected={tab === 'skins'} className={tab === 'skins' ? 'active' : ''} onClick={() => setTab('skins')}>Skins <span>{skins.length}</span></button><button role="tab" aria-selected={tab === 'matches'} className={tab === 'matches' ? 'active' : ''} onClick={() => setTab('matches')}>Matches <span>{matches.length}</span></button><button role="tab" aria-selected={tab === 'profile'} className={tab === 'profile' ? 'active' : ''} onClick={() => setTab('profile')}>Profile <span>{nameHistory.length}</span></button></div>
     {tab === 'heroes' && <div className="hero-list insight-list">{heroStats.length ? heroStats.slice(0, 6).map((hero, index) => <div className="hero-row" key={hero.name}><div className="hero-index">{String(index + 1).padStart(2, '0')}</div><HeroIcon name={hero.name} url={hero.iconUrl || profile?.stats?.heroIcons?.[hero.name]} /><div className="hero-copy"><b>{hero.name}</b><span>{hero.kda != null ? `${hero.kda} KDA` : index === 0 ? 'Primary pick' : 'Rotation'}</span></div><HeroPerformanceMetric hero={hero} /></div>) : <InsightEmpty text="No hero performance data yet." />}</div>}
-    {tab === 'proficiency' && <div className="proficiency-list insight-list">{proficiency.length ? proficiency.slice(0, 12).map((hero, index) => <article className="proficiency-card" key={hero.name}><div className="proficiency-index">{String(index + 1).padStart(2, '0')}</div><HeroIcon name={hero.name} url={hero.iconUrl || profile?.stats?.heroIcons?.[hero.name]} /><div className="proficiency-copy"><b>{hero.name}</b><span className="proficiency-tier">{hero.tierIconUrl && <img src={hero.tierIconUrl} alt="" referrerPolicy="no-referrer" />}{hero.tier || 'No tier yet'}</span></div><ProficiencyMetric level={hero.level} /></article>) : <InsightEmpty text="No proficiency data yet." />}</div>}
+    {tab === 'proficiency' && <div className="proficiency-list insight-list">{proficiency.length ? proficiency.slice(0, 12).map((hero, index) => <article className="proficiency-card" key={hero.name}><div className="proficiency-index">{String(index + 1).padStart(2, '0')}</div><HeroIcon name={hero.name} url={hero.iconUrl || profile?.stats?.heroIcons?.[hero.name]} /><div className="proficiency-copy"><b>{hero.name}</b><span className="proficiency-tier">{hero.tierIconUrl && <img src={reliableRivalsAssetUrl(hero.tierIconUrl)} alt="" referrerPolicy="no-referrer" />}{hero.tier || 'No tier yet'}</span></div><ProficiencyMetric level={hero.level} /></article>) : <InsightEmpty text="No proficiency data yet." />}</div>}
     {tab === 'skins' && <div className="skin-inventory insight-list">
       <div className="skin-summary"><div><span>INVENTORY VALUE</span><b>{inventoryValue.toLocaleString()} <small>units</small></b></div><div><span>EVENT SKINS</span><b>{eventSkinsOwned.toLocaleString()}{profile?.stats?.eventSkinsTotal != null && <small> / {profile.stats.eventSkinsTotal.toLocaleString()}</small>}</b></div><div><span>OWNED SKINS</span><b>{skins.length.toLocaleString()}</b></div></div>
       <div className="skin-filters" aria-label="Skin inventory filters"><label><span>Hero</span><select value={skinHero} onChange={(event) => setSkinHero(event.target.value)}><option value="all">All heroes</option>{skinHeroes.map((hero) => <option value={hero} key={hero}>{hero}</option>)}</select></label><label><span>Type</span><select value={skinType} onChange={(event) => setSkinType(event.target.value)}><option value="all">All types</option>{skinTypes.map((type) => <option value={type} key={type}>{type.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())}</option>)}</select></label><span>{visibleSkins.length} shown</span></div>
-      <div className="skin-grid">{visibleSkins.length ? visibleSkins.map((skin, index) => <article className={`skin-card ${skin.equipped ? 'equipped' : ''}`} key={skin.id || `${skin.hero}-${skin.name}-${index}`}>{skin.iconUrl ? <img src={skin.iconUrl} alt="" referrerPolicy="no-referrer" /> : <div className="skin-placeholder"><Palette size={22} /></div>}<div><b>{skin.name}{skin.equipped && <small> Equipped</small>}</b><span>{[skin.hero, skin.category || skin.rarity, skin.source].filter(Boolean).join(' · ') || 'Marvel Rivals skin'}</span></div>{skin.value != null && <strong>{skin.value.toLocaleString()} <small>units</small></strong>}</article>) : skins.length ? <div className="skin-empty"><Search size={25} /><b>No matching skins</b><span>Change the Hero or Type filter to see more of this inventory.</span></div> : <div className="skin-empty"><Palette size={25} /><b>No skins loaded</b><span>Refresh the player to request the current inventory directly from RivalsData.</span><button className="secondary-button compact" onClick={onRefresh} disabled={refreshing}>{refreshing ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} {refreshing ? 'Loading inventory…' : 'Refresh inventory'}</button></div>}</div>
+      <div className="skin-grid">{visibleSkins.length ? visibleSkins.map((skin, index) => <article className={`skin-card ${skin.equipped ? 'equipped' : ''}`} key={skin.id || `${skin.hero}-${skin.name}-${index}`}>{skin.iconUrl ? <img src={reliableRivalsAssetUrl(skin.iconUrl)} alt="" referrerPolicy="no-referrer" /> : <div className="skin-placeholder"><Palette size={22} /></div>}<div><b>{skin.name}{skin.equipped && <small> Equipped</small>}</b><span>{[skin.hero, skin.category || skin.rarity, skin.source].filter(Boolean).join(' · ') || 'Marvel Rivals skin'}</span></div>{skin.value != null && <strong>{skin.value.toLocaleString()} <small>units</small></strong>}</article>) : skins.length ? <div className="skin-empty"><Search size={25} /><b>No matching skins</b><span>Change the Hero or Type filter to see more of this inventory.</span></div> : <div className="skin-empty"><Palette size={25} /><b>No skins loaded</b><span>Refresh the player to request the current inventory directly from RivalsData.</span><button className="secondary-button compact" onClick={onRefresh} disabled={refreshing}>{refreshing ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} {refreshing ? 'Loading inventory…' : 'Refresh inventory'}</button></div>}</div>
     </div>}
     {tab === 'matches' && <div className="match-history-list insight-list">{matches.length ? matches.map((match, index) => <MatchHistoryRow match={match} heroIconUrl={match.heroIconUrl || (match.hero ? profile?.stats?.heroIcons?.[match.hero] : undefined)} key={match.matchId || `${match.timeAgo}-${match.map}-${index}`} />) : <InsightEmpty text="No recent matches available." />}</div>}
     {tab === 'profile' && <ProfileIntelligence profile={profile} />}
@@ -727,7 +874,7 @@ function ProficiencyMetric({ level }: { level?: number }) {
 function HeroIcon({ name, url }: { name: string; url?: string }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [url]);
-  return <div className="hero-medallion">{url && !failed ? <img src={url} alt="" referrerPolicy="no-referrer" onError={() => setFailed(true)} /> : initials(name)}</div>;
+  return <div className="hero-medallion">{url && !failed ? <img src={reliableRivalsAssetUrl(url)} alt="" referrerPolicy="no-referrer" onError={() => setFailed(true)} /> : initials(name)}</div>;
 }
 
 function InsightEmpty({ text }: { text: string }) {
@@ -744,7 +891,12 @@ function ProfileModal({ account, profile, storagePath, onClose, onSave, onRemove
   const [note, setNote] = useState(profile?.note ?? '');
   const [saving, setSaving] = useState(false);
   const valid = /^\d+$/.test(uid.trim());
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal-card"><div className="modal-icon"><Link2 /></div><button className="modal-close" onClick={onClose}><X size={18} /></button><span className="eyebrow">RIVALS DATA IDENTITY</span><h2>{hasIdentity(profile) ? 'Edit saved profile' : 'Save Marvel Rivals profile'}</h2><p className="modal-lead">Rival Shift uses the Marvel Rivals UID to load this player exclusively from Rivals Data.</p><label className="form-label"><span>Exact in-game name <small>OPTIONAL</small></span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Filled from Rivals Data when left blank" autoFocus /></label><label className="form-label"><span>Marvel Rivals UID <small>REQUIRED</small></span><input value={uid} onChange={(event) => setUid(event.target.value.replace(/\D/g, ''))} placeholder="e.g. 1822797559" inputMode="numeric" /></label><label className="form-label"><span>Private note <small>OPTIONAL</small></span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="e.g. Support queue, EU region" maxLength={80} /></label><div className="privacy-note"><ShieldCheck size={16} /><span>Saved permanently at {storagePath || 'the Rival Shift app-data folder'}. It is not temporary storage.</span></div><div className="modal-actions">{onRemove && <button className="danger-text" onClick={onRemove}><Unlink size={15} /> Unlink</button>}<span /><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={!valid || saving} onClick={async () => { setSaving(true); await onSave({ steamId64: account.steamId64, uid: uid.trim(), inGameName: name.trim(), note: note.trim(), favorite: profile?.favorite ?? false, updatedAt: new Date().toISOString(), status: 'linked', stats: profile?.stats }); setSaving(false); }}>{saving ? <LoaderCircle className="spin" size={15} /> : <Database size={15} />} Save & load data</button></div></div></div>;
+  const save = async () => {
+    setSaving(true);
+    await onSave({ steamId64: account.steamId64, uid: uid.trim(), inGameName: name.trim(), note: note.trim(), favorite: profile?.favorite ?? false, group: profile?.group, updatedAt: new Date().toISOString(), status: 'linked', stats: profile?.stats });
+    setSaving(false);
+  };
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal-card"><div className="modal-icon"><Link2 /></div><button className="modal-close" onClick={onClose}><X size={18} /></button><span className="eyebrow">RIVALS DATA IDENTITY</span><h2>{hasIdentity(profile) ? 'Edit saved profile' : 'Save Marvel Rivals profile'}</h2><p className="modal-lead">Rival Shift uses the Marvel Rivals UID to load this player exclusively from Rivals Data.</p><label className="form-label"><span>Exact in-game name <small>OPTIONAL</small></span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Filled from Rivals Data when left blank" autoFocus /></label><label className="form-label"><span>Marvel Rivals UID <small>REQUIRED</small></span><input value={uid} onChange={(event) => setUid(event.target.value.replace(/\D/g, ''))} placeholder="e.g. 1822797559" inputMode="numeric" /></label><label className="form-label"><span>Private note <small>OPTIONAL</small></span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="e.g. Support queue, EU region" maxLength={80} /></label><div className="privacy-note"><ShieldCheck size={16} /><span>Saved permanently at {storagePath || 'the Rival Shift app-data folder'}. It is not temporary storage.</span></div><div className="modal-actions">{onRemove && <button className="danger-text" onClick={onRemove}><Unlink size={15} /> Unlink</button>}<span /><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={!valid || saving} onClick={() => void save()}>{saving ? <LoaderCircle className="spin" size={15} /> : <Database size={15} />} Save & load data</button></div></div></div>;
 }
 
 function playerPresenceDetail(player: TrackedPlayer) {
@@ -760,11 +912,11 @@ function TrackedPlayerCard({ player, onToggleFavorite, onOpenProfile }: { player
   </article>;
 }
 
-function PlayerSearchPage({ query, setQuery, results, favorites, searching, refreshing, onSearch, onToggleFavorite, onRefreshFavorites, onOpenProfile }: { query: string; setQuery: (value: string) => void; results: TrackedPlayer[]; favorites: TrackedPlayer[]; searching: boolean; refreshing: boolean; onSearch: () => Promise<void>; onToggleFavorite: (player: TrackedPlayer) => Promise<void>; onRefreshFavorites: () => Promise<void>; onOpenProfile: (uid: string) => Promise<void> }) {
+function PlayerSearchPage({ query, setQuery, results, favorites, searching, refreshing, autoRefresh, onToggleAutoRefresh, onSearch, onToggleFavorite, onRefreshFavorites, onOpenProfile }: { query: string; setQuery: (value: string) => void; results: TrackedPlayer[]; favorites: TrackedPlayer[]; searching: boolean; refreshing: boolean; autoRefresh: boolean; onToggleAutoRefresh: () => void; onSearch: () => Promise<void>; onToggleFavorite: (player: TrackedPlayer) => Promise<void>; onRefreshFavorites: () => Promise<void>; onOpenProfile: (uid: string) => Promise<void> }) {
   const presenceOrder: Record<TrackedPlayer['presence'], number> = { 'in-game': 0, 'in-team': 1, online: 2, away: 3, offline: 4 };
   const orderedFavorites = [...favorites].sort((left, right) => presenceOrder[left.presence] - presenceOrder[right.presence] || left.name.localeCompare(right.name));
   return <main className="player-search-page">
-    <header className="player-search-header"><div><span className="eyebrow">RIVALS DATA PLAYERS</span><h2>Find and track players</h2><p>Search by exact name or UID, then favorite players to keep their live status close.</p></div><button className="secondary-button" disabled={refreshing || !favorites.length} onClick={() => void onRefreshFavorites()}>{refreshing ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />} Refresh favorites</button></header>
+    <header className="player-search-header"><div><span className="eyebrow">RIVALS DATA PLAYERS</span><h2>Find and track players</h2><p>Search by exact name or UID, then favorite players to keep their live status close.</p></div><div className="player-search-header-actions"><button className={`player-auto-refresh ${autoRefresh ? 'active' : ''}`} disabled={!autoRefresh && query.trim().length < 2} onClick={onToggleAutoRefresh}>{autoRefresh ? <X size={14} /> : <Radio size={14} />}<span><b>{autoRefresh ? 'Stop auto search' : 'Auto search'}</b><small>{autoRefresh ? 'Searching every 3 seconds' : 'Refresh every 3 seconds'}</small></span></button><button className="secondary-button" disabled={refreshing || !favorites.length} onClick={() => void onRefreshFavorites()}>{refreshing ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />} Refresh favorites</button></div></header>
     <div className="player-search-scroll">
       <form className="player-lookup" onSubmit={(event) => { event.preventDefault(); void onSearch(); }}><Search size={20} /><div><label htmlFor="manual-player-search">Player name or UID</label><input id="manual-player-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="e.g. Veswa or 680173547" autoComplete="off" /></div><button className="primary-button" disabled={searching || query.trim().length < 2}>{searching ? <LoaderCircle className="spin" size={15} /> : <Search size={15} />} Search</button></form>
       <section className="tracked-section"><div className="tracked-section-heading"><div><span className="eyebrow">FAVORITES</span><h3>Player watchlist</h3></div><span>{favorites.length} saved</span></div>{orderedFavorites.length ? <div className="tracked-player-grid">{orderedFavorites.map((player) => <TrackedPlayerCard key={player.uid} player={player} onToggleFavorite={onToggleFavorite} onOpenProfile={onOpenProfile} />)}</div> : <div className="tracked-empty"><Star size={26} /><b>No favorite players yet</b><span>Search for a player and tap the star to track rank and presence here.</span></div>}</section>
@@ -791,7 +943,7 @@ function sniperElapsed(since: string | undefined, now: number) {
 function TopSniperRow({ player, now, onOpenProfile }: { player: TopSniperPlayer; now: number; onOpenProfile: (uid: string) => Promise<void> }) {
   return <article className="top-sniper-row">
     <strong className="top-sniper-position">#{player.leaderboardPosition}</strong>
-    <div className="top-sniper-player">{player.iconUrl ? <img src={player.iconUrl} alt="" /> : <span className="top-sniper-avatar">{initials(player.name)}</span>}<div><b>{player.name}</b><small>UID {player.uid}</small></div></div>
+    <div className="top-sniper-player">{player.iconUrl ? <img src={reliableRivalsAssetUrl(player.iconUrl)} alt="" /> : <span className="top-sniper-avatar">{initials(player.name)}</span>}<div><b>{player.name}</b><small>UID {player.uid}</small></div></div>
     <div className="top-sniper-status-cell"><span className={`presence-badge ${player.presence}`}><i />{player.presenceText}</span>{topSniperGroup(player) !== 'online' && <small><History size={10} /> {sniperElapsed(player.statusSinceAt, now)}</small>}</div>
     <div className="top-sniper-rank"><b>{player.rank || 'Unranked'}</b><small>{player.rankScore != null ? `${player.rankScore.toLocaleString()} RS` : 'No score'}</small></div>
     <div className="top-sniper-record"><b>{player.winRate != null ? `${player.winRate}%` : '—'}</b><small>{player.wins ?? 0}W · {player.losses ?? 0}L</small></div>
@@ -903,6 +1055,12 @@ function SettingsPage({ extension, launcherSkip, updateStatus, preferences, onBa
       </div>
     </div>
 
+    <div className="integration-block privacy-settings-block">
+      <div className="integration-heading"><LockKeyhole size={16} /><div><b>Privacy mode</b><span>Protect account identities while streaming or sharing your screen</span></div><i className={preferences.privacyMode ? 'ok' : ''} /></div>
+      <label className="toggle-row integration-toggle"><div><b>Hide player names and UIDs</b><span>{preferences.privacyMode ? 'Protected — identity text and player avatars are obscured throughout the app.' : 'Names and account identifiers are currently visible.'}</span></div><input type="checkbox" checked={preferences.privacyMode} onChange={(event) => void onSetPreference('privacyMode', event.target.checked)} /><i /></label>
+      <div className="privacy-note"><ShieldCheck size={16} /><span>The title-bar Privacy button lets you toggle this instantly before a stream or screenshot.</span></div>
+    </div>
+
     <div className="integration-block connection-settings-block">
       <div className="integration-heading"><Database size={16} /><div><b>Rivals Data connection</b><span>Choose how Rival Shift loads rank, matches, heroes, and proficiency</span></div><i className={preferences.rivalsDataMode === 'api' || extension.connected ? 'ok' : ''} /></div>
       <div className="connection-mode-grid" role="radiogroup" aria-label="Rivals Data connection">
@@ -940,6 +1098,7 @@ function SettingsPage({ extension, launcherSkip, updateStatus, preferences, onBa
       <div className="integration-heading"><Download size={16} /><div><b>Automatic updates</b><span>Keep Rival Shift current with signed release packages</span></div><i className={preferences.autoUpdates && updateStatus.configured ? 'ok' : ''} /></div>
       <label className="toggle-row integration-toggle"><div><b>Download updates automatically</b><span>{preferences.autoUpdates ? 'Check at startup and every six hours while Rival Shift is running.' : 'Off — this installation will stay on its current version.'}</span></div><input type="checkbox" checked={preferences.autoUpdates} onChange={(event) => void onSetPreference('autoUpdates', event.target.checked)} /><i /></label>
       <div className={`update-status-card state-${updateStatus.state}`}><span className="update-status-icon">{updateStatus.state === 'checking' || updateStatus.state === 'downloading' || updateStatus.state === 'available' ? <LoaderCircle className="spin" size={16} /> : updateStatus.state === 'downloaded' ? <Check size={16} /> : <Download size={16} />}</span><div><b>{updateStatus.state === 'downloaded' ? `Version ${updateStatus.availableVersion} ready` : updateStatus.state === 'not-available' ? `Rival Shift ${updateStatus.currentVersion} is current` : updateStatus.state === 'unconfigured' ? 'Release feed required' : updateStatus.state === 'disabled' ? 'Updates are off' : updateStatus.state === 'error' ? 'Update check failed' : updateStatus.state === 'downloading' ? `Downloading ${Math.round(updateStatus.progress ?? 0)}%` : updateStatus.state === 'checking' ? 'Checking for updates' : 'Update service ready'}</b><span>{updateStatus.message}</span>{updateStatus.state === 'downloading' && <i className="update-progress"><i style={{ width: `${updateStatus.progress ?? 0}%` }} /></i>}</div><div className="update-status-actions">{updateStatus.state === 'downloaded' ? <button className="primary-button compact" onClick={() => void onInstallUpdate()}><Power size={13} /> Restart & install</button> : <button className="secondary-button compact" disabled={!preferences.autoUpdates || !updateStatus.configured || updateStatus.state === 'checking' || updateStatus.state === 'downloading' || updateStatus.state === 'available'} onClick={() => void onCheckUpdates()}><RefreshCw size={13} /> Check now</button>}</div></div>
+      <details className="update-changelog" open><summary><span><History size={13} /> What’s new in 0.9.39</span><ChevronDown size={14} /></summary><div><span><Check size={11} /> Overall peak ranks now load across every season in live games and the account hub</span><span><Check size={11} /> Mandatory hidden-name reveal refresh every 15 seconds</span><span><Check size={11} /> Open stats button on every account card</span><span><Check size={11} /> Optional three-second auto search in Players</span></div></details>
       {!updateStatus.configured && <div className="privacy-note"><ShieldCheck size={16} /><span>The updater is safely inactive until a release feed is embedded during packaging.</span></div>}
     </div>
 
@@ -980,14 +1139,14 @@ function LiveArtwork({ src, name, className = '' }: { src?: string; name: string
   const [failed, setFailed] = useState(false);
   useEffect(() => { setFailed(false); }, [src]);
   return src && !failed
-    ? <img className={className} src={src} alt={name} title={name} onError={() => setFailed(true)} />
+    ? <img className={className} src={reliableRivalsAssetUrl(src)} alt={name} title={name} onError={() => setFailed(true)} />
     : <span className={`${className} live-artwork-fallback`} title={name}>{initials(name)}</span>;
 }
 
 function LiveRankStat({ rank, score, iconUrl, peak = false }: { rank: string; score?: string; iconUrl?: string; peak?: boolean }) {
   if (!rank) return <span className="live-rank-missing">—</span>;
-  return <div className={`live-rank-stat ${peak ? 'peak' : 'current'}`} title={`${peak ? 'Peak' : 'Current'} rank: ${rank}${score ? ` · ${score}` : ''}`}>
-    <LiveArtwork src={iconUrl} name={`${rank} ${peak ? 'peak' : 'current'} rank`} />
+  return <div className={`live-rank-stat ${peak ? 'peak' : 'current'}`} title={`${peak ? 'Overall peak' : 'Current'} rank: ${rank}${score ? ` · ${score}` : ''}`}>
+    <LiveArtwork src={iconUrl} name={`${rank} ${peak ? 'overall peak' : 'current'} rank`} />
     <div><b>{rank}</b>{score && <small>{score}</small>}</div>
   </div>;
 }
@@ -1001,7 +1160,7 @@ function LivePlayerRow({ player }: { player: LiveMatchPlayer }) {
   const currentRank = shortRankName(player.rank);
   const peakRank = shortRankName(player.peakRank);
   const currentScore = player.rankScore == null ? undefined : /^(?:E|OAA)$/.test(currentRank) ? `${player.rankScore} RS` : `${Math.floor(player.rankScore)}/100`;
-  const peakScore = /^(?:E|OAA)$/.test(peakRank) && player.peakRankScore != null ? `${player.peakRankScore} RS` : undefined;
+  const peakScore = player.peakRankScore == null ? undefined : /^(?:E|OAA)$/.test(peakRank) ? `${player.peakRankScore} RS` : `${Math.floor(player.peakRankScore)}/100`;
   return <div className={`live-player-shell ${expanded ? 'expanded' : ''}`}>
     <article className="live-player">
       <div className="live-player-name"><LiveArtwork src={player.avatarUrl} name={player.name} /><div><b>{player.name}</b><small>{player.uid ? `UID ${player.uid}` : 'Marvel Rivals player'}{player.inParty ? ' · IN PARTY' : ''}</small></div></div>
@@ -1039,16 +1198,17 @@ function LiveSignal({ state }: { state: Exclude<LiveVisualState, 'live'> }) {
 function LiveGamePage({ account, profile, snapshot, loading, searching, onStart, onStop, onRefresh, onRecheck, onForceRefresh, onAccounts }: { account?: SteamAccount; profile?: RivalProfile; snapshot: LiveMatchSnapshot | null; loading: boolean; searching: boolean; onStart: () => void; onStop: () => void; onRefresh: () => void; onRecheck: () => void; onForceRefresh: () => void; onAccounts: () => void }) {
   const name = profile?.inGameName || account?.personaName || 'Current session';
   const visualState: LiveVisualState = loading ? 'checking' : snapshot?.status === 'in-game' ? 'live' : snapshot?.status === 'offline' ? 'offline' : 'idle';
-  return <main className="live-game-page"><header className="settings-header live-page-header"><div><span className="eyebrow">CURRENT SESSION</span><h2>Live game</h2><p>Lobby intelligence for the Steam account that is active right now.</p></div><div className="live-page-actions">{searching ? <button className="manual-check-pill stop-search" onClick={onStop}><X size={11} /> STOP SEARCHING</button> : snapshot?.status === 'in-game' ? <button className="manual-check-pill recheck" onClick={onRecheck}><RefreshCw size={11} /> CHECK NEXT MATCH</button> : <span className="manual-check-pill"><Radio size={11} /> READY</span>}<button className="secondary-button" onClick={onAccounts}><ChevronRight className="back-chevron" size={15} /> Accounts</button></div></header><div className="live-game-scroll">
+  const maskedNames = hasMaskedLivePlayerNames(snapshot);
+  return <main className="live-game-page"><header className="settings-header live-page-header"><div><span className="eyebrow">CURRENT SESSION</span><h2>Live game</h2><p>Lobby intelligence for the Steam account that is active right now.</p></div><div className="live-page-actions">{snapshot?.status === 'in-game' ? maskedNames ? <span className="manual-check-pill hidden-name-lock"><LockKeyhole size={11} /> NAME REVEAL LOCKED</span> : <button className="manual-check-pill recheck" onClick={onRecheck}><RefreshCw size={11} /> CHECK NEXT MATCH</button> : searching ? <button className="manual-check-pill stop-search" onClick={onStop}><X size={11} /> STOP SEARCHING</button> : <span className="manual-check-pill"><Radio size={11} /> READY</span>}<button className="secondary-button" onClick={onAccounts}><ChevronRight className="back-chevron" size={15} /> Accounts</button></div></header><div className="live-game-scroll">
     {!account ? <div className="live-page-empty"><Gamepad2 size={30} /><h3>No active Steam session</h3><p>Open Steam with a remembered account, then refresh Rival Shift.</p><button className="secondary-button" onClick={onAccounts}>View accounts</button></div>
       : !profile?.uid ? <div className="live-page-empty"><Link2 size={30} /><h3>Link the current account first</h3><p>{account.personaName} needs a Marvel Rivals UID before Rival Shift can check Rivals Data.</p><button className="primary-button" onClick={onAccounts}>Link current account</button></div>
       : <section className="live-game-board">
     <div className="live-modal-heading"><div className={`modal-icon live-heading-icon ${visualState}`}><LiveStateIcon state={visualState} /></div><div><span className="eyebrow">LIVE MATCH · RIVALS DATA</span><h2>{name}</h2><p>{snapshot?.status === 'in-game' ? `${snapshot.mode || 'In game'} · ${snapshot.elapsed || 'Live now'}` : 'Current game status and lobby details'}</p></div>{snapshot?.status === 'in-game' && <span className="live-status-pill"><i /> IN GAME</span>}</div>
     {loading && !snapshot ? <div className="live-loading"><LiveSignal state="checking" /><b>Searching for a live match…</b><span>{searching ? 'Rival Shift will keep checking until you stop it manually.' : 'Rivals Data may take about 15 seconds before its live lobby is ready.'}</span><button className="force-refresh-button" onClick={searching ? onStop : onForceRefresh}>{searching ? <X size={14} /> : <Zap size={14} />} {searching ? 'Stop searching' : 'Force refresh from zero'}</button></div>
       : snapshot?.status === 'offline' ? <div className="live-offline"><LiveSignal state="offline" /><h3>{searching ? 'Still searching for a live game' : 'Player is not currently in game'}</h3><p>{searching ? 'Rival Shift checks Rivals Data again every five seconds and will continue until you press Stop searching.' : 'Start searching to keep checking until a live lobby appears or you stop it.'}</p><button className={searching ? 'secondary-button stop-live-search' : 'primary-button'} onClick={searching ? onStop : onStart}>{searching ? <X size={15} /> : <RefreshCw size={15} />} {searching ? 'Stop searching' : 'Start searching'}</button></div>
-      : snapshot ? <div className="live-teams">{snapshot.teams.map((team) => <section className="live-team" key={team.name}><header><div><span>{team.name}</span><b>AVG {team.averageRankScore ?? '-'} RS</b></div><strong className={(team.projectedChange ?? 0) >= 0 ? 'positive' : 'negative'}>{team.projectedChange != null ? `${team.projectedChange > 0 ? '+' : ''}${team.projectedChange}` : '-'}</strong></header><div className="live-player-labels"><span>PLAYER</span><span>CURRENT</span><span>PEAK</span><span>RECORD</span><span>TOP HEROES</span></div>{team.players.map((player) => <LivePlayerRow player={player} key={`${team.name}-${player.uid || player.name}`} />)}</section>)}</div>
+      : snapshot ? <div className="live-teams">{snapshot.teams.map((team) => <section className="live-team" key={team.name}><header><div><span>{team.name}</span><b>AVG {team.averageRankScore ?? '-'} RS</b></div><strong className={(team.projectedChange ?? 0) >= 0 ? 'positive' : 'negative'}>{team.projectedChange != null ? `${team.projectedChange > 0 ? '+' : ''}${team.projectedChange}` : '-'}</strong></header><div className="live-player-labels"><span>PLAYER</span><span>CURRENT</span><span>OVERALL PEAK</span><span>RECORD</span><span>TOP HEROES</span></div>{team.players.map((player) => <LivePlayerRow player={player} key={`${team.name}-${player.uid || player.name}`} />)}</section>)}</div>
       : <div className="live-ready"><LiveSignal state="idle" /><h3>Ready to search</h3><p>Rival Shift will keep checking Rivals Data until you stop the search manually.</p><button className="primary-button" onClick={onStart}><Radio size={15} /> Start live-game search</button></div>}
-    {snapshot?.status === 'in-game' && <div className="live-modal-footer"><span>{snapshot.teams.some((team) => team.players.some((player) => isMaskedLiveName(player.name))) ? (loading ? 'Refreshing hidden names now' : 'Hidden names found · refreshing again in 15 seconds') : `Captured ${relativeTime(snapshot.checkedAt)} · all player names are visible`}</span><span className="live-lock-note">{snapshot.teams.some((team) => team.players.some((player) => isMaskedLiveName(player.name))) ? <><RefreshCw className={loading ? 'spin' : ''} size={11} /> AUTO REFRESH</> : <><LockKeyhole size={11} /> LOBBY SNAPSHOT</>}</span></div>}
+    {snapshot?.status === 'in-game' && <div className="live-modal-footer"><span>{maskedNames ? (loading ? 'Refreshing hidden names now · this continues until every name is visible' : 'Hidden names found · mandatory refresh again in 15 seconds') : `Captured ${relativeTime(snapshot.checkedAt)} · all player names are visible`}</span><span className="live-lock-note">{maskedNames ? <><RefreshCw className={loading ? 'spin' : ''} size={11} /> REVEALING NAMES</> : <><LockKeyhole size={11} /> LOBBY SNAPSHOT</>}</span></div>}
   </section>}
   </div></main>;
 }
@@ -1084,6 +1244,10 @@ function BackupModal({ onClose, onExport, onImport }: { onClose: () => void; onE
   return <div className="modal-backdrop"><div className="modal-card backup-modal"><button className="modal-close" onClick={onClose} disabled={working}><X size={18} /></button><div className="modal-icon"><LockKeyhole /></div><span className="eyebrow">PORTABLE PROFILE BACKUP</span><h2>Encrypted export & import</h2><p className="modal-lead">The backup includes linked identities, private notes, cached stats, and rank history. Steam passwords are never included.</p><label className="form-label"><span>Backup passphrase <small>MINIMUM 8 CHARACTERS</small></span><input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} autoFocus placeholder="Enter a strong passphrase" /></label><div className="backup-security"><ShieldCheck size={17} /><span><b>AES-256-GCM protected</b>Keep this passphrase safe. Rival Shift cannot recover it.</span></div><div className="backup-actions"><button className="secondary-button" disabled={!valid || working} onClick={() => void run(onImport)}>{working ? <LoaderCircle className="spin" size={15} /> : <Upload size={15} />} Import backup</button><button className="primary-button" disabled={!valid || working} onClick={() => void run(onExport)}>{working ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />} Export encrypted backup</button></div></div></div>;
 }
 
+function UpdateReadyModal({ version, installing, onLater, onInstall }: { version: string; installing: boolean; onLater: () => void; onInstall: () => Promise<void> }) {
+  return <div className="modal-backdrop update-ready-backdrop" role="dialog" aria-modal="true" aria-labelledby="update-ready-title"><div className="modal-card update-ready-modal"><div className="update-ready-icon"><Download size={22} /></div><span className="eyebrow">UPDATE DOWNLOADED</span><h2 id="update-ready-title">Rival Shift {version} is ready</h2><p className="modal-lead">The update has finished downloading. Restart Rival Shift now to install it, or continue playing and install it later from Settings.</p><div className="update-ready-version"><span><Check size={14} /></span><div><b>Ready to install</b><small>Your accounts and local settings will stay exactly as they are.</small></div></div><div className="update-ready-actions"><button className="secondary-button" disabled={installing} onClick={onLater}>Later</button><button className="primary-button" disabled={installing} onClick={() => void onInstall()}>{installing ? <LoaderCircle className="spin" size={15} /> : <Power size={15} />}{installing ? 'Restarting…' : 'Install & restart'}</button></div></div></div>;
+}
+
 function AboutModal({ onClose }: { onClose: () => void }) {
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal-card about-modal"><div className="modal-icon"><Sparkles /></div><button className="modal-close" onClick={onClose}><X size={18} /></button><span className="eyebrow">RIVAL SHIFT v0.9.27</span><h2>Focused Marvel Rivals switching.</h2><p className="modal-lead">Steam switching follows the open-source TcNo Account Switcher approach. No passwords are stored. Linked identities and cached stats persist in app data.</p><div className="about-points"><div><ShieldCheck /><span><b>Safe local state</b>Backs up loginusers.vdf before every switch.</span></div><div><Gamepad2 /><span><b>Steam-native logic</b>Updates remembered account state and registry values.</span></div><div><Heart /><span><b>Live-tested data</b>Loads a verified source without bypassing site security.</span></div></div><div className="modal-actions"><span /><button className="primary-button" onClick={onClose}>Got it</button></div></div></div>;
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal-card about-modal"><div className="modal-icon"><Sparkles /></div><button className="modal-close" onClick={onClose}><X size={18} /></button><span className="eyebrow">RIVAL SHIFT v0.9.39</span><h2>Focused Marvel Rivals switching.</h2><p className="modal-lead">Steam switching follows the open-source TcNo Account Switcher approach. No passwords are stored. Linked identities and cached stats persist in app data.</p><div className="about-points"><div><ShieldCheck /><span><b>Safe local state</b>Backs up loginusers.vdf before every switch.</span></div><div><Gamepad2 /><span><b>Steam-native logic</b>Updates remembered account state and registry values.</span></div><div><Heart /><span><b>Live-tested data</b>Loads a verified source without bypassing site security.</span></div></div><div className="modal-actions"><span /><button className="primary-button" onClick={onClose}>Got it</button></div></div></div>;
 }

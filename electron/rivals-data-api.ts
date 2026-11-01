@@ -173,6 +173,11 @@ function rankIcon(rank: string): string {
   return rank === 'Unranked' ? '' : `https://rivalsdata.com/assets/ranks/${slug(rank.replace(/\s+[123]$/, ''))}.webp`;
 }
 
+function profileIconUrl(icon: unknown): string {
+  const value = text(icon);
+  return value ? `https://cdn.rivalsdata.com/assets/icons/${encodeURIComponent(value)}.webp` : '';
+}
+
 function liveModeName(value: unknown): string | undefined {
   const mode = number(value);
   if (mode === 100) return 'Quick Play';
@@ -200,6 +205,27 @@ function liveRankScore(score?: number, level?: number): number | undefined {
   return Math.floor(score - 5_100 + 30);
 }
 
+type OverallPeakRank = { rank: string; score?: number; iconUrl?: string };
+
+export function overallPeakRank(profilePayload: unknown): OverallPeakRank | undefined {
+  const seasons = Object.values(object(object(profilePayload).rank_game_season)).map(object);
+  const peaks = seasons.map((season) => {
+    const level = number(season.max_level) ?? number(season.season_max_level) ?? number(season.level);
+    const absoluteScore = number(season.max_rank_score) ?? number(season.rank_score);
+    return { level, absoluteScore };
+  }).filter((peak): peak is { level: number; absoluteScore: number | undefined } => peak.level != null && peak.level > 0);
+  const peak = peaks.sort((left, right) => {
+    const levelDifference = right.level - left.level;
+    return levelDifference || (right.absoluteScore ?? Number.NEGATIVE_INFINITY) - (left.absoluteScore ?? Number.NEGATIVE_INFINITY);
+  })[0];
+  if (!peak) return undefined;
+  const rank = rankName(peak.level);
+  if (rank === 'Unranked') return undefined;
+  const score = liveRankScore(peak.absoluteScore, peak.level);
+  const iconUrl = rankIcon(rank);
+  return { rank, ...(score != null ? { score } : {}), ...(iconUrl ? { iconUrl } : {}) };
+}
+
 type LivePlayerWithSide = { side: number; partyId?: string; player: LiveMatchPlayer };
 
 function normalizeLivePlayer(entryKey: string, payload: unknown, profilePayload?: unknown): LivePlayerWithSide | undefined {
@@ -209,6 +235,7 @@ function normalizeLivePlayer(entryKey: string, payload: unknown, profilePayload?
   const uid = text(Object.hasOwn(info, 'uid') ? info.uid : entryKey);
   const rank = object(info.rank);
   const profileRank = latestRank(object(profilePayload));
+  const peakRank = overallPeakRank(profilePayload);
   const rankLevel = number(profileRank.level) ?? number(rank.level);
   const absoluteRankScore = number(profileRank.rank_score) ?? number(rank.score ?? rank.elo_score);
   const rankLabel = rankName(rankLevel);
@@ -239,9 +266,14 @@ function normalizeLivePlayer(entryKey: string, payload: unknown, profilePayload?
     player: {
       uid: uid === 'null' || uid === 'undefined' ? '' : uid,
       name: text(info.name) || (uid ? `Player ${uid}` : 'Hidden player'),
-      ...(icon ? { avatarUrl: `https://rivalsdata.com/assets/icons/${encodeURIComponent(icon)}.webp` } : {}),
+      ...(profileIconUrl(icon) ? { avatarUrl: profileIconUrl(icon) } : {}),
       ...(rankLabel !== 'Unranked' ? { rank: rankLabel, rankIconUrl: rankIcon(rankLabel) } : {}),
       rankScore: liveRankScore(absoluteRankScore, rankLevel),
+      ...(peakRank ? {
+        peakRank: peakRank.rank,
+        peakRankScore: peakRank.score,
+        peakRankIconUrl: peakRank.iconUrl,
+      } : {}),
       wins,
       losses,
       winRate: wins != null && rankedMatches ? Math.round((wins / rankedMatches) * 100) : undefined,
@@ -360,7 +392,7 @@ export function normalizeTrackedPlayer(payload: unknown, fallback: { uid: string
   return {
     uid,
     name,
-    ...(icon ? { iconUrl: `https://rivalsdata.com/assets/icons/${encodeURIComponent(icon)}.webp` } : {}),
+    ...(profileIconUrl(icon) ? { iconUrl: profileIconUrl(icon) } : {}),
     level: number(info.level),
     rank: rankName(rankLevel),
     rankScore: rankScore != null ? Math.round(rankScore) : undefined,
@@ -386,7 +418,7 @@ export function normalizeTopSnipers(payload: unknown): TopSniperPlayer[] {
     return {
       uid,
       name,
-      ...(icon ? { iconUrl: `https://rivalsdata.com/assets/icons/${encodeURIComponent(icon)}.webp` } : {}),
+      ...(profileIconUrl(icon) ? { iconUrl: profileIconUrl(icon) } : {}),
       rank: rankName(rankLevel),
       rankScore: score != null ? Math.round(score) : undefined,
       rankProgress: rankProgress(score, rankLevel),
@@ -513,7 +545,7 @@ function normalizeTeammates(payload: unknown): FrequentTeammate[] {
     return {
       uid: text(entry.teammate_uid ?? entry.uid),
       name: text(entry.name) || 'Unknown player',
-      ...(icon ? { iconUrl: `https://rivalsdata.com/assets/icons/${encodeURIComponent(icon)}.webp` } : {}),
+      ...(profileIconUrl(icon) ? { iconUrl: profileIconUrl(icon) } : {}),
       matches,
       wins,
       losses,
@@ -717,6 +749,7 @@ export function normalizeRivalsDataResponses(
   const currentRankScore = currentRankScoreRaw != null ? Math.round(currentRankScoreRaw) : undefined;
   const currentRankProgress = rankProgress(currentRankScoreRaw, rankLevel);
   const currentRankIcon = rankIcon(currentRank);
+  const peakRank = overallPeakRank(info);
   const faction = object(info.faction);
   const leaderboard = object(info.leaderboard);
   const leaderboardValue = number(leaderboard[String(number(rank.rank_game_id) ?? '')]) ?? Object.values(leaderboard).map(number).find((value) => value != null);
@@ -735,6 +768,9 @@ export function normalizeRivalsDataResponses(
       rankScore: currentRankScore,
       rankProgress: currentRankProgress,
       rankProgressMax: currentRankProgress != null ? 100 : undefined,
+      peakRank: peakRank?.rank,
+      peakRankScore: peakRank?.score,
+      peakRankIconUrl: peakRank?.iconUrl,
       leaderboardRank: leaderboardValue != null ? `#${Math.round(leaderboardValue).toLocaleString('en-US')}` : undefined,
       winRate: wins != null && matches ? Math.round((wins / matches) * 1000) / 10 : undefined,
       wins,
@@ -756,7 +792,7 @@ export function normalizeRivalsDataResponses(
       factionName: text(faction.name) || undefined,
       matchHistoryVisible: number(info.match_history_is_visible) === 1,
       lastSeenAt: timestampIso(info.last_seen),
-      profileIconUrl: profileIcon ? `https://rivalsdata.com/assets/icons/${encodeURIComponent(profileIcon)}.webp` : undefined,
+      profileIconUrl: profileIconUrl(profileIcon) || undefined,
       rankIconUrl: currentRankIcon || undefined,
       rankIconRemoteUrl: currentRankIcon || undefined,
       syncedAt: new Date().toISOString(),

@@ -14,11 +14,13 @@ const DEFAULT_PREFERENCES: AppPreferences = {
   skipLauncher: false,
   directLaunchReminder: true,
   autoUpdates: true,
+  privacyMode: false,
   startupMode: 'off',
 };
 
 type StoreShape = {
   profiles: Record<string, RivalProfile>;
+  hiddenAccounts?: string[];
   favoritePlayers?: Record<string, TrackedPlayer>;
   settings?: { preferences?: Partial<AppPreferences> };
   steamRoot?: string;
@@ -96,6 +98,23 @@ export class ProfileStore {
       const data = await this.read();
       delete data.profiles[steamId64];
       await this.write(data);
+    });
+  }
+  async hiddenAccounts(): Promise<string[]> { return [...new Set((await this.read()).hiddenAccounts ?? [])]; }
+  async hideAccount(steamId64: string): Promise<string[]> {
+    return this.mutate(async () => {
+      const data = await this.read();
+      data.hiddenAccounts = [...new Set([...(data.hiddenAccounts ?? []), steamId64])];
+      await this.write(data);
+      return data.hiddenAccounts;
+    });
+  }
+  async restoreHiddenAccounts(): Promise<string[]> {
+    return this.mutate(async () => {
+      const data = await this.read();
+      data.hiddenAccounts = [];
+      await this.write(data);
+      return [];
     });
   }
   async saveFavoritePlayer(player: TrackedPlayer): Promise<TrackedPlayer[]> {

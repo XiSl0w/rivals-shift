@@ -23,14 +23,16 @@ test('Discord presence can be turned off without changing its application ID', a
 
 test('Discord activity shows the viewed account, rank, and public rank badge', () => {
   const activity = buildDiscordActivity(4, 'need flirty gf', new Date('2026-08-07T00:00:00Z'), 'Celestial 2', 'https://assets.example/ranks/celestial.webp');
-  assert.equal(activity.details, 'Viewing need flirty gf');
-  assert.equal(activity.state, 'Celestial 2');
+  assert.equal(activity.details, 'Active player · need flirty gf');
+  assert.equal(activity.state, 'Celestial 2 · 4 accounts ready');
   assert.equal(activity.smallImageKey, 'https://rivalsdata.com/assets/ranks/celestial.webp');
-  assert.equal(activity.smallImageText, 'Celestial 2');
+  assert.equal(activity.smallImageText, 'Celestial 2 · Competitive');
+  assert.equal(activity.largeImageText, 'Rival Shift · Marvel Rivals command center');
   assert.equal(activity.largeImageKey, undefined);
+  assert.equal(activity.buttons, undefined);
   assert.equal(buildDiscordActivity(4, 'name', new Date(), 'Diamond 1', 'data:image/webp;base64,rank').smallImageKey, 'https://rivalsdata.com/assets/ranks/diamond.webp');
-  assert.equal(buildDiscordActivity(4, '', new Date()).details, 'Marvel Rivals account hub');
-  assert.equal(buildDiscordActivity(4, '', new Date()).state, '4 Steam accounts ready');
+  assert.equal(buildDiscordActivity(4, '', new Date()).details, 'Marvel Rivals command center');
+  assert.equal(buildDiscordActivity(4, '', new Date()).state, '4 accounts ready to shift');
 });
 
 test('Discord rank badges cover every competitive tier and reject local fallback images', () => {
@@ -43,17 +45,17 @@ test('Discord rank badges cover every competitive tier and reject local fallback
 test('Discord presence tracks live-game state only when live context is supplied', () => {
   const startedAt = new Date('2026-08-07T00:00:00Z');
   const checking = buildDiscordActivity(4, 'Elsa', startedAt, 'Celestial 3', '', { status: 'checking', playerName: 'Elsa' });
-  assert.equal(checking.details, "Checking Elsa's live game");
-  assert.equal(checking.state, 'Looking for an active match');
+  assert.equal(checking.details, 'Scanning for Elsa');
+  assert.equal(checking.state, 'Searching for a live match…');
 
   const active = buildDiscordActivity(4, 'Elsa', startedAt, 'Celestial 3', '', { status: 'in-game', playerName: 'Elsa', mode: 'Competitive', elapsed: '06:31', checkedAt: '2026-08-07T00:10:00Z' });
-  assert.equal(active.details, "Tracking Elsa's live game");
-  assert.equal(active.state, 'Competitive · 06:31 elapsed');
+  assert.equal(active.details, 'Live match · Elsa');
+  assert.equal(active.state, 'Competitive · Celestial 3');
   assert.equal(active.startTimestamp.toISOString(), '2026-08-07T00:03:29.000Z');
 
   const offline = buildDiscordActivity(4, 'Elsa', startedAt, 'Celestial 3', '', { status: 'offline', playerName: 'Elsa' });
-  assert.equal(offline.state, 'No active match found');
-  assert.equal(buildDiscordActivity(4, 'Elsa', startedAt, 'Celestial 3').details, 'Viewing Elsa');
+  assert.equal(offline.state, 'No active match · Standing by');
+  assert.equal(buildDiscordActivity(4, 'Elsa', startedAt, 'Celestial 3').details, 'Active player · Elsa');
   assert.equal(discordPresenceStartedAt(startedAt, { status: 'in-game', elapsed: 'bad', checkedAt: '2026-08-07T00:10:00Z' }), startedAt);
 });
 

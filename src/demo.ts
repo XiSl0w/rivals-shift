@@ -32,6 +32,7 @@ Object.assign(profiles[accounts[0].steamId64].stats ?? {}, {
 });
 
 let favoritePlayers: TrackedPlayer[] = [{ uid: '680173547', name: 'Veswa', level: 86, rank: 'One Above All', rankScore: 5464, presence: 'offline', presenceText: 'Offline', lastSeenAt: new Date(Date.now() - 86_400_000).toISOString(), favorite: true, updatedAt: new Date().toISOString() }];
+let hiddenAccounts: string[] = [];
 const demoTopSnipers: TopSniperPlayer[] = [
   { uid: '934100021', name: 'falores', rank: 'One Above All', rankScore: 5612, presence: 'in-game', presenceText: 'In queue', lastSeenAt: null, favorite: false, updatedAt: new Date().toISOString(), leaderboardPosition: 9, wins: 126, losses: 61, winRate: 67.4 },
   { uid: '934100033', name: '赛斐', rank: 'One Above All', rankScore: 5526, presence: 'in-game', presenceText: 'In game (Competitive)', lastSeenAt: null, favorite: false, updatedAt: new Date().toISOString(), leaderboardPosition: 33, wins: 98, losses: 52, winRate: 65.3 },
@@ -42,10 +43,18 @@ const demoTopSnipers: TopSniperPlayer[] = [
 
 let discordStatus: DiscordStatus = { enabled: true, clientId: '1535197736289439786', state: 'connected', message: 'Rich Presence is active.' };
 let launcherSkip = false;
-let preferences: AppPreferences = { theme: 'nebula', rivalsDataMode: 'api', discordRichPresence: true, quickSwitchShortcut: false, quickAccessShortcut: 'CommandOrControl+Shift+R', closeAction: 'ask', matchNotifications: true, backgroundMonitoring: false, skipLauncher: false, directLaunchReminder: true, autoUpdates: true, startupMode: 'off' };
-let updateStatus: AppUpdateStatus = { enabled: true, configured: false, state: 'unconfigured', currentVersion: '0.9.27', message: 'Add a release feed to activate automatic updates.' };
+let preferences: AppPreferences = { theme: 'nebula', rivalsDataMode: 'api', discordRichPresence: true, quickSwitchShortcut: false, quickAccessShortcut: 'CommandOrControl+Shift+R', closeAction: 'ask', matchNotifications: true, backgroundMonitoring: false, skipLauncher: false, directLaunchReminder: true, autoUpdates: true, privacyMode: false, startupMode: 'off' };
+const demoUpdateReady = new URLSearchParams(window.location.search).has('updateReady');
+let updateStatus: AppUpdateStatus = demoUpdateReady
+  ? { enabled: true, configured: true, state: 'downloaded', currentVersion: '0.9.39', availableVersion: '0.9.40', progress: 100, message: 'Rival Shift 0.9.40 is ready to install.' }
+  : { enabled: true, configured: false, state: 'unconfigured', currentVersion: '0.9.39', message: 'Add a release feed to activate automatic updates.' };
 
 export const demoApi: RivalShiftApi = {
+  async minimizeWindow() {},
+  async toggleMaximizeWindow() { return false; },
+  async closeWindow() {},
+  async isWindowMaximized() { return false; },
+  onWindowMaximized() { return () => undefined; },
   async listAccounts() { return { steamRoot: 'C:\\Program Files (x86)\\Steam', accounts, platform: 'win32' }; },
   async openSteamLogin() {},
   async isGameRunning() { return false; },
@@ -54,6 +63,9 @@ export const demoApi: RivalShiftApi = {
   async getStoragePath() { return '%APPDATA%\\Rival Shift\\rival-shift.json'; },
   async saveProfile(profile) { profiles[profile.steamId64] = profile; return profile; },
   async removeProfile(steamId64) { delete profiles[steamId64]; },
+  async getHiddenAccounts() { return [...hiddenAccounts]; },
+  async hideAccount(steamId64) { hiddenAccounts = [...new Set([...hiddenAccounts, steamId64])]; return [...hiddenAccounts]; },
+  async restoreHiddenAccounts() { hiddenAccounts = []; return []; },
   async switchAccount(steamId64) { await new Promise((resolve) => setTimeout(resolve, 1100)); accounts.forEach((account) => { account.currentSession = account.steamId64 === steamId64; }); return { ok: true, accountName: accounts.find((account) => account.steamId64 === steamId64)?.accountName ?? '' }; },
   async openPlayerProfile(uid) { window.open(`https://rivalsdata.com/player/${encodeURIComponent(uid)}`, '_blank'); },
   async copyText(text) { await navigator.clipboard.writeText(text); },

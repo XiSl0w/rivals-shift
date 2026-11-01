@@ -55,6 +55,22 @@ test('Rivals Data all-season peak rows choose the highest rank and highest top-t
   assert.deepEqual(rivalsDataParser.parseRivalsDataPeakRank(document), { peakRank: 'One Above All', peakRankScore: 147, peakRankIconUrl: 'https://rivalsdata.com/assets/ranks/one-above-all-alt.webp' });
 });
 
+test('Rivals Data overall peak uses the highest rank across every season', () => {
+  const document = parseHTML(`
+    <button type="button" aria-pressed="false" class="hidden">Show Peak</button>
+    <button type="button" aria-pressed="true">Show Peak</button>
+    <ul>
+      <li><span>S10.5</span><span><span><img src="/assets/ranks/grandmaster-alt.webp"><span>GM1</span> <span>51 RS</span></span></span><span>52W</span></li>
+      <li><span>S7.5</span><span><span><img src="/assets/ranks/grandmaster-alt.webp"><span>GM2</span> <span>94 RS</span></span></span><span>34W</span></li>
+      <li><span>S2.5</span><span><span><img src="/assets/ranks/celestial-alt.webp"><span>C3</span> <span>63 RS</span></span></span><span>49W</span></li>
+      <li><span>S1.5</span><span><span><img src="/assets/ranks/celestial-alt.webp"><span>C3</span> <span>20 RS</span></span></span><span>52W</span></li>
+    </ul>
+  `).document;
+  assert.deepEqual(rivalsDataParser.parseRivalsDataPeakRank(document), {
+    peakRank: 'Celestial 3', peakRankScore: 63, peakRankIconUrl: 'https://rivalsdata.com/assets/ranks/celestial-alt.webp',
+  });
+});
+
 test('Rivals Data live game parses both teams and every visible player field', () => {
   const document = parseHTML(`
     <h2>MACE</h2><span>In game (Competitive) - 10:08</span>
@@ -157,7 +173,8 @@ test('content script handles Rivals Data tabs and never sends a heading as ident
   assert.match(source, /new MouseEvent\('mousedown'/);
   assert.match(source, /button\[aria-label\^="Toggle details for"\]/);
   assert.match(source, /selectRivalsDataSeason\('All Seasons'\)/);
-  assert.match(source, /findExactButton\('Show Peak'\)/);
+  assert.match(source, /findExactButtons\('Show Peak'\)/);
+  assert.match(source, /getClientRects\(\)\.length/);
   assert.match(source, /kind === 'peak-rank'/);
   assert.match(source, /inlineRivalsDataLiveImages/);
   assert.match(source, /Could not activate the \$\{name\} tab/);
@@ -170,6 +187,7 @@ test('live-game background enrichment checks every public lobby UID for peak ran
   assert.match(source, /kind:\s*'peak-rank'/);
   assert.match(source, /rivalsdata\.com\/player\/\$\{encodeURIComponent\(uid\)\}/);
   assert.match(source, /Math\.min\(4, uids\.length\)/);
+  assert.match(source, /Object\.assign\(result\.snapshot, peak\)/);
 });
 
 test('background identifies its live runtime version on every bridge request', () => {
@@ -178,18 +196,30 @@ test('background identifies its live runtime version on every bridge request', (
   assert.match(source, /version=\$\{encodeURIComponent\(RUNTIME_VERSION\)\}/);
 });
 
-test('live-game checks stop after finding a match and captured lobbies can be rechecked', () => {
+test('live-game search stops after finding a match while hidden names refresh until revealed', () => {
   const source = fs.readFileSync(path.join(root, 'src', 'App.tsx'), 'utf8');
   assert.match(source, /result\.status === 'in-game'[\s\S]*setLiveSearchActive\(false\)/);
   assert.match(source, /setTimeout\(\(\) => void checkLiveMatch\('refresh'\), 5_000\)/);
+  assert.match(source, /resolvingHiddenLiveNames[\s\S]*setTimeout\(\(\) => void checkLiveMatch\('refresh'\), 15_000\)/);
+  assert.match(source, /hasMaskedLivePlayerNames\(liveMatch\)/);
   assert.doesNotMatch(source, /if \(!liveMatch && currentProfile\?\.uid/);
-  assert.match(source, /AUTO REFRESH/);
+  assert.match(source, /NAME REVEAL LOCKED/);
+  assert.match(source, /mandatory refresh again in 15 seconds/);
   assert.match(source, /STOP SEARCHING/);
   assert.match(source, /CHECK NEXT MATCH/);
   assert.match(source, /onRecheck/);
   assert.match(source, /LOBBY SNAPSHOT/);
   const preload = fs.readFileSync(path.join(root, 'electron', 'preload.ts'), 'utf8');
   assert.match(preload, /restartLiveMatch:[\s\S]*forceRefresh: true, restart: true/);
+});
+
+test('player search offers a protected three-second auto-refresh loop', () => {
+  const source = fs.readFileSync(path.join(root, 'src', 'App.tsx'), 'utf8');
+  assert.match(source, /playerAutoRefresh/);
+  assert.match(source, /setInterval\(\(\) => void searchPlayers\(\), 3_000\)/);
+  assert.match(source, /playerSearchInFlight\.current/);
+  assert.match(source, /Stop auto search/);
+  assert.match(source, /Searching every 3 seconds/);
 });
 
 test('expanded live-game players grow the board into the outer scroll surface', () => {

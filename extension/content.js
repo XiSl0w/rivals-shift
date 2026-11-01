@@ -77,8 +77,11 @@ async function loadPeakRank() {
   await selectRivalsDataSeason('All Seasons');
   const started = Date.now();
   while (Date.now() - started < 10_000) {
-    const button = findExactButton('Show Peak');
-    if (button && button.getAttribute('aria-pressed') !== 'true') activateControl(button);
+    const buttons = findExactButtons('Show Peak');
+    if (buttons.length && !buttons.some((button) => button.getAttribute('aria-pressed') === 'true')) {
+      const visibleButton = buttons.find((button) => button.getClientRects().length > 0) || buttons[0];
+      activateControl(visibleButton);
+    }
     try {
       const peak = playerParser.parseRivalsDataPeakRank(document, location.href);
       if (/^https:\/\//i.test(peak.peakRankIconUrl || '')) {
@@ -92,7 +95,12 @@ async function loadPeakRank() {
 }
 
 function findExactButton(name) {
-  return [...document.querySelectorAll('button')].find((element) => playerParser.clean(element.textContent) === name);
+  const buttons = findExactButtons(name);
+  return buttons.find((button) => button.getClientRects().length > 0) || buttons[0];
+}
+
+function findExactButtons(name) {
+  return [...document.querySelectorAll('button')].filter((element) => playerParser.clean(element.textContent) === name);
 }
 
 async function waitForExactButton(name, timeout = 20_000) {

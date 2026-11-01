@@ -10,13 +10,14 @@ const temporaryOutput = await mkdtemp(path.join(tmpdir(), 'rival-shift-installer
 const cli = path.join(projectRoot, 'node_modules', 'electron-builder', 'out', 'cli', 'cli.js');
 const updateUrl = process.env.RIVAL_SHIFT_UPDATE_URL?.trim();
 if (updateUrl && new URL(updateUrl).protocol !== 'https:') throw new Error('RIVAL_SHIFT_UPDATE_URL must use HTTPS.');
+const publishConfig = updateUrl ? [{ provider: 'generic', url: updateUrl }] : packageJson.build.publish;
 
 try {
   const builderConfigPath = path.join(temporaryOutput, 'electron-builder.json');
   await writeFile(builderConfigPath, JSON.stringify({
     ...packageJson.build,
     directories: { ...packageJson.build.directories, output: temporaryOutput },
-    ...(updateUrl ? { publish: [{ provider: 'generic', url: updateUrl }] } : {}),
+    ...(publishConfig ? { publish: publishConfig } : {}),
   }, null, 2), 'utf8');
   const packageResult = spawnSync(process.execPath, [cli, '--win', 'nsis', '--config', builderConfigPath], {
     cwd: projectRoot,
@@ -25,7 +26,7 @@ try {
   });
   if (packageResult.status !== 0) process.exit(packageResult.status ?? 1);
 
-  const payloadName = (await readdir(temporaryOutput)).find((name) => /^Rival Shift Payload .*\.exe$/i.test(name));
+  const payloadName = (await readdir(temporaryOutput)).find((name) => /^Rival-Shift-Payload-.*\.exe$/i.test(name));
   if (!payloadName) throw new Error('Electron Builder completed without producing the silent installer payload.');
 
   const sourceTemplate = await readFile(path.join(projectRoot, 'build', 'CustomInstaller.cs'), 'utf8');
@@ -61,7 +62,7 @@ try {
   if (compiled.status !== 0) process.exit(compiled.status ?? 1);
 
   console.log(`Custom installer ready: ${destination}`);
-  console.log(updateUrl ? `Auto-update feed embedded: ${updateUrl}` : 'Auto-update feed not configured. Set RIVAL_SHIFT_UPDATE_URL to an HTTPS release directory when packaging.');
+  console.log(updateUrl ? `Auto-update feed embedded: ${updateUrl}` : publishConfig ? 'Auto-update provider embedded from package.json.' : 'Auto-update feed not configured. Set RIVAL_SHIFT_UPDATE_URL to an HTTPS release directory when packaging.');
 } finally {
   await rm(temporaryOutput, { recursive: true, force: true }).catch(() => undefined);
 }

@@ -83,6 +83,10 @@ async function runJob(job) {
     }
     if (!result?.ok) throw new Error(result?.error || 'Could not read the Rivals Data profile.');
     if (job.kind === 'live-match') result.snapshot = await addLivePeakRanks(job, result.snapshot);
+    else {
+      const peak = await loadPeakRank(job, job.uid);
+      if (peak?.peakRank) Object.assign(result.snapshot, peak);
+    }
     await bridge(`/jobs/${encodeURIComponent(job.id)}/complete`, { method: 'POST', body: JSON.stringify(result.snapshot) });
   } catch (error) {
     await bridge(`/jobs/${encodeURIComponent(job.id)}/fail`, {

@@ -77,7 +77,7 @@ async function main() {
       mode: snapshot.mode,
       teams: snapshot.teams.map((team) => ({
         averageRankScore: team.averageRankScore,
-        players: team.players.map(({ uid, name, rank, rankScore, wins, losses, winRate }) => ({ uid, name, rank, rankScore, wins, losses, winRate })),
+        players: team.players.map(({ uid, name, rank, rankScore, peakRank, peakRankScore, wins, losses, winRate }) => ({ uid, name, rank, rankScore, peakRank, peakRankScore, wins, losses, winRate })),
       })),
     }, null, 2));
     app.quit();

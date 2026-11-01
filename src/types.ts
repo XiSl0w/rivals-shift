@@ -206,6 +206,7 @@ export type AppPreferences = {
   skipLauncher: boolean;
   directLaunchReminder: boolean;
   autoUpdates: boolean;
+  privacyMode: boolean;
   startupMode: 'window' | 'tray' | 'off';
 };
 
@@ -225,6 +226,7 @@ export type RivalProfile = {
   inGameName: string;
   note: string;
   favorite: boolean;
+  group?: string;
   updatedAt: string | null;
   status: 'unlinked' | 'linked' | 'synced' | 'error';
   error?: string;
@@ -235,6 +237,9 @@ export type RivalProfile = {
     rankScore?: number;
     rankProgress?: number;
     rankProgressMax?: number;
+    peakRank?: string;
+    peakRankScore?: number;
+    peakRankIconUrl?: string;
     leaderboardRank?: string;
     winRate?: number;
     wins?: number;
@@ -296,6 +301,11 @@ export type RivalsDataExtensionStatus = {
 };
 
 export type RivalShiftApi = {
+  minimizeWindow(): Promise<void>;
+  toggleMaximizeWindow(): Promise<boolean>;
+  closeWindow(): Promise<void>;
+  isWindowMaximized(): Promise<boolean>;
+  onWindowMaximized(listener: (maximized: boolean) => void): () => void;
   listAccounts(): Promise<SteamSnapshot>;
   openSteamLogin(): Promise<void>;
   isGameRunning(): Promise<boolean>;
@@ -305,6 +315,9 @@ export type RivalShiftApi = {
   getStoragePath(): Promise<string>;
   saveProfile(profile: RivalProfile): Promise<RivalProfile>;
   removeProfile(steamId64: string): Promise<void>;
+  getHiddenAccounts(): Promise<string[]>;
+  hideAccount(steamId64: string): Promise<string[]>;
+  restoreHiddenAccounts(): Promise<string[]>;
   openPlayerProfile(uid: string): Promise<void>;
   copyText(text: string): Promise<void>;
   syncProfile(steamId64: string): Promise<RivalProfile>;

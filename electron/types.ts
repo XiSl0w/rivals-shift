@@ -206,6 +206,7 @@ export type AppPreferences = {
   skipLauncher: boolean;
   directLaunchReminder: boolean;
   autoUpdates: boolean;
+  privacyMode: boolean;
   startupMode: 'window' | 'tray' | 'off';
 };
 
@@ -225,6 +226,7 @@ export type RivalProfile = {
   inGameName: string;
   note: string;
   favorite: boolean;
+  group?: string;
   updatedAt: string | null;
   status: 'unlinked' | 'linked' | 'synced' | 'error';
   error?: string;
@@ -235,6 +237,9 @@ export type RivalProfile = {
     rankScore?: number;
     rankProgress?: number;
     rankProgressMax?: number;
+    peakRank?: string;
+    peakRankScore?: number;
+    peakRankIconUrl?: string;
     leaderboardRank?: string;
     winRate?: number;
     wins?: number;

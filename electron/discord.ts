@@ -32,33 +32,34 @@ export function discordPresenceStartedAt(fallback: Date, liveGame?: DiscordLiveP
 
 export function buildDiscordActivity(accountCount: number, selectedName: string, startedAt: Date, rank = '', rankIconUrl = '', liveGame?: DiscordLivePresence) {
   const hasPlayerData = Boolean(selectedName && rank);
+  const accountLabel = `${accountCount} account${accountCount === 1 ? '' : 's'}`;
   // Browser-scraped source URLs may require session cookies and render as a
   // question mark in Discord. Use public tier artwork for all known ranks.
   const publicRankIconUrl = discordRankIconUrl(rank, rankIconUrl);
-  let details = hasPlayerData ? `Viewing ${selectedName}` : 'Marvel Rivals account hub';
-  let state = hasPlayerData ? rank : `${accountCount} Steam account${accountCount === 1 ? '' : 's'} ready`;
+  let details = hasPlayerData ? `Active player · ${selectedName}` : 'Marvel Rivals command center';
+  let state = hasPlayerData ? `${rank} · ${accountLabel} ready` : `${accountLabel} ready to shift`;
   if (liveGame) {
     const player = liveGame.playerName?.trim() || selectedName || 'current player';
     if (liveGame.status === 'checking') {
-      details = `Checking ${player}'s live game`;
-      state = 'Looking for an active match';
+      details = `Scanning for ${player}`;
+      state = 'Searching for a live match…';
     } else if (liveGame.status === 'in-game') {
-      details = `Tracking ${player}'s live game`;
-      state = [liveGame.mode || 'Live match', liveGame.elapsed ? `${liveGame.elapsed} elapsed` : 'In progress'].join(' · ');
+      details = `Live match · ${player}`;
+      state = [liveGame.mode || 'Match in progress', rank || 'In progress'].join(' · ');
     } else if (liveGame.status === 'offline') {
-      details = `Tracking ${player}'s live game`;
-      state = 'No active match found';
+      details = `Watching ${player}`;
+      state = 'No active match · Standing by';
     } else {
-      details = 'Live game tracking';
-      state = `Ready to check ${player}`;
+      details = 'Live match radar';
+      state = `Ready to scan ${player}`;
     }
   }
   return {
     details,
     state,
     startTimestamp: discordPresenceStartedAt(startedAt, liveGame),
-    ...(publicRankIconUrl ? { smallImageKey: publicRankIconUrl, smallImageText: rank } : {}),
-    buttons: [{ label: 'Rivals Data', url: 'https://rivalsdata.com' }],
+    largeImageText: 'Rival Shift · Marvel Rivals command center',
+    ...(publicRankIconUrl ? { smallImageKey: publicRankIconUrl, smallImageText: `${rank} · Competitive` } : {}),
     instance: false,
   };
 }

@@ -303,13 +303,15 @@
   }
 
   function parseRivalsDataPeakRank(document, pageUrl = 'https://rivalsdata.com/') {
-    const peakButton = [...document.querySelectorAll('button')].find((button) => clean(button.textContent) === 'Show Peak');
-    if (!peakButton || peakButton.getAttribute('aria-pressed') !== 'true') throw new Error('Rivals Data peak ranks are not active yet.');
+    const peakButtons = [...document.querySelectorAll('button')].filter((button) => clean(button.textContent) === 'Show Peak');
+    if (!peakButtons.some((button) => button.getAttribute('aria-pressed') === 'true')) throw new Error('Rivals Data peak ranks are not active yet.');
     const rows = [...document.querySelectorAll('li')].flatMap((row) => {
       const text = spacedText(row);
       const values = [...row.querySelectorAll('span')].map((node) => clean(node.textContent)).filter(Boolean);
-      if (!values.some((value) => /^S(?:eason\s*)?\d+(?:\.\d+)?$/i.test(value))) return [];
-      const rank = expandShortRank(values.find((value) => /^(?:OAA|GM[123]|[BSGPDCE][123]?)$/i.test(value)));
+      if (!values.some((value) => /^S(?:eason\s*)?\d+(?:\.\d+)?$/i.test(value)) && !/^S(?:eason\s*)?\d+(?:\.\d+)?\b/i.test(text)) return [];
+      const rankToken = values.find((value) => /^(?:OAA|GM[123]|[BSGPDCE][123]?)$/i.test(value))
+        || text.match(/\b(OAA|GM[123]|[BSGPDCE][123]?)\b/i)?.[1];
+      const rank = expandShortRank(rankToken);
       if (!rank) return [];
       const score = number(values.find((value) => /^[+-]?[\d,]+\s*RS$/i.test(value))) ?? number(text.match(/([+-]?[\d,]+)\s*RS/i)?.[1]);
       const icon = row.querySelector('img[src*="/assets/ranks/"]');

@@ -57,13 +57,15 @@ test('Rivals Data snapshot merges stats and game asset URLs without dropping cac
     updatedAt: null, status: 'linked', stats: { matches: 9, heroIcons: { Magik: 'https://old/magik.png' } },
   };
   const merged = mergeRivalsDataSnapshot(profile, {
-    uid: '123', name: 'Fresh', rank: 'Diamond 2', rankIconUrl: 'https://assets/rank.png',
+    uid: '123', name: 'Fresh', rank: 'Diamond 2', rankIconUrl: 'https://assets/rank.png', peakRank: 'Celestial 1', peakRankScore: 83,
     winRate: 55.4, heroes: [{ name: 'Magik', iconUrl: 'https://assets/magik.png' }, { name: 'Luna Snow', iconUrl: 'https://assets/luna.png' }],
   });
   assert.equal(merged.inGameName, 'Old');
   assert.equal(merged.stats.rank, 'Diamond 2');
   assert.equal(merged.stats.matches, 9);
   assert.equal(merged.stats.rankIconUrl, 'https://assets/rank.png');
+  assert.equal(merged.stats.peakRank, 'Celestial 1');
+  assert.equal(merged.stats.peakRankScore, 83);
   assert.deepEqual(merged.stats.heroes, ['Magik', 'Luna Snow']);
   assert.equal(merged.stats.heroIcons.Magik, 'https://assets/magik.png');
   assert.equal(merged.stats.source, 'Rivals Data via browser extension');

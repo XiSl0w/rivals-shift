@@ -4,7 +4,7 @@ import { buildPlayerProfileUrl } from './data-sources';
 import type { HeroPerformance, HeroProficiency, LiveMatchSnapshot, MatchSummary, PlayerSkin, RivalProfile, RivalsDataExtensionStatus } from './types';
 
 export const RIVALS_BRIDGE_PORT = 38573;
-export const RIVALS_DATA_EXTENSION_VERSION = '0.9.27';
+export const RIVALS_DATA_EXTENSION_VERSION = '0.9.39';
 
 export type RivalsDataPageSnapshot = {
   uid?: string;
@@ -12,6 +12,9 @@ export type RivalsDataPageSnapshot = {
   rank?: string;
   rankScore?: number;
   rankProgress?: number;
+  peakRank?: string;
+  peakRankScore?: number;
+  peakRankIconUrl?: string;
   level?: number;
   winRate?: number;
   wins?: number;
@@ -74,6 +77,7 @@ export function mergeRivalsDataSnapshot(profile: RivalProfile, snapshot: RivalsD
   const skins = (snapshot.skins ?? []).filter((skin) => skin.name.trim());
   const matchHistory = (snapshot.matchHistory ?? []).filter((match) => match.mode.trim());
   const rank = validRank(snapshot.rank);
+  const peakRank = validRank(snapshot.peakRank);
   const rankAssetUrl = rank ? `https://rivalsdata.com/assets/ranks/${rank.replace(/\s+[123]$/, '').toLowerCase().replace(/\s+/g, '-')}.webp` : undefined;
   const rankProgress = snapshot.rankProgress == null ? undefined : Math.max(-30, Math.min(100, Math.floor(snapshot.rankProgress)));
   const heroIcons = { ...(profile.stats?.heroIcons ?? {}) };
@@ -94,6 +98,9 @@ export function mergeRivalsDataSnapshot(profile: RivalProfile, snapshot: RivalsD
       ...(rank ? { rank } : {}),
       ...(snapshot.rankScore != null ? { rankScore: snapshot.rankScore } : {}),
       ...(rankProgress != null ? { rankProgress, rankProgressMax: 100 } : {}),
+      ...(peakRank ? { peakRank } : {}),
+      ...(peakRank && snapshot.peakRankScore != null ? { peakRankScore: snapshot.peakRankScore } : {}),
+      ...(peakRank ? { peakRankIconUrl: snapshot.peakRankIconUrl || `https://rivalsdata.com/assets/ranks/${peakRank.replace(/\s+[123]$/, '').toLowerCase().replace(/\s+/g, '-')}.webp` } : {}),
       ...(snapshot.level != null ? { level: snapshot.level } : {}),
       ...(snapshot.winRate != null ? { winRate: snapshot.winRate } : {}),
       ...(snapshot.wins != null ? { wins: snapshot.wins } : {}),

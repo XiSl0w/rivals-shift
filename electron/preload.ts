@@ -23,6 +23,15 @@ ipcRenderer.on('game-launch:reminder', (_event, message: string) => {
 });
 
 contextBridge.exposeInMainWorld('rivalShift', {
+  minimizeWindow: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
+  toggleMaximizeWindow: (): Promise<boolean> => ipcRenderer.invoke('window:toggle-maximize'),
+  closeWindow: (): Promise<void> => ipcRenderer.invoke('window:close'),
+  isWindowMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:is-maximized'),
+  onWindowMaximized: (listener: (maximized: boolean) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, maximized: boolean) => listener(maximized);
+    ipcRenderer.on('window:maximized-changed', handler);
+    return () => ipcRenderer.removeListener('window:maximized-changed', handler);
+  },
   listAccounts: (): Promise<SteamSnapshot> => ipcRenderer.invoke('steam:list'),
   openSteamLogin: (): Promise<void> => ipcRenderer.invoke('steam:open-login'),
   isGameRunning: (): Promise<boolean> => ipcRenderer.invoke('game:running'),
@@ -32,6 +41,9 @@ contextBridge.exposeInMainWorld('rivalShift', {
   getStoragePath: (): Promise<string> => ipcRenderer.invoke('profiles:storage-path'),
   saveProfile: (profile: RivalProfile): Promise<RivalProfile> => ipcRenderer.invoke('profiles:save', profile),
   removeProfile: (steamId64: string): Promise<void> => ipcRenderer.invoke('profiles:remove', steamId64),
+  getHiddenAccounts: (): Promise<string[]> => ipcRenderer.invoke('accounts:hidden'),
+  hideAccount: (steamId64: string): Promise<string[]> => ipcRenderer.invoke('accounts:hide', steamId64),
+  restoreHiddenAccounts: (): Promise<string[]> => ipcRenderer.invoke('accounts:restore-hidden'),
   openPlayerProfile: (uid: string): Promise<void> => ipcRenderer.invoke('profiles:open', uid),
   copyText: async (text: string): Promise<void> => { clipboard.writeText(text); },
   syncProfile: (steamId64: string): Promise<RivalProfile> => ipcRenderer.invoke('profiles:sync', steamId64),

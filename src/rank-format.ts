@@ -23,5 +23,6 @@ export function shortRankName(rank?: string): string {
 export function peakRankLabel(rank?: string, score?: number): string {
   const short = shortRankName(rank);
   if (!short) return '';
-  return /^(?:E|OAA)$/.test(short) && score != null ? `${short} ${score} RS` : short;
+  if (score == null) return short;
+  return /^(?:E|OAA)$/.test(short) ? `${short} ${score} RS` : `${short} ${Math.floor(score)}/100`;
 }

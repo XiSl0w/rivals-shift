@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, shell, Tray } from 'electron';
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, protocol, shell, Tray } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
@@ -11,6 +11,7 @@ import { RivalsDataBridge, mergeRivalsDataSnapshot } from './rivals-bridge';
 import { buildPlayerProfileUrl } from './data-sources';
 import { RivalsDataApi } from './rivals-data-api';
 import { decryptProfileBackup, encryptProfileBackup } from './backup';
+import { RivalsAssetCache } from './rivals-asset-cache';
 import type { AppPreferences, AppPrompt, AppUpdateStatus, DiscordLivePresence, MatchSummary, RivalProfile, TrackedPlayer } from './types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -34,6 +35,8 @@ let registeredQuickShortcut = '';
 let updateStatus: AppUpdateStatus = { enabled: true, configured: false, state: 'unconfigured', currentVersion: app.getVersion(), message: 'The update source has not been configured yet.' };
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 const startedInTray = process.argv.includes('--startup-tray');
+
+protocol.registerSchemesAsPrivileged([{ scheme: 'rivals-asset', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, corsEnabled: true } }]);
 
 if (!hasSingleInstanceLock) app.quit();
 
@@ -90,12 +93,15 @@ function createWindow(show = true) {
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 760,
-    minWidth: 940,
-    minHeight: 620,
+    minWidth: 760,
+    minHeight: 600,
     show,
     backgroundColor: '#08090d',
-    titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#08090d', symbolColor: '#a9abb7', height: 42 },
+    frame: false,
+    resizable: true,
+    minimizable: true,
+    maximizable: true,
+    thickFrame: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -104,6 +110,9 @@ function createWindow(show = true) {
     },
   });
   mainWindow.setMenuBarVisibility(false);
+  const publishMaximized = () => mainWindow?.webContents.send('window:maximized-changed', Boolean(mainWindow?.isMaximized()));
+  mainWindow.on('maximize', publishMaximized);
+  mainWindow.on('unmaximize', publishMaximized);
   mainWindow.on('close', (event) => {
     if (!quitting) { event.preventDefault(); void handleWindowClose(); }
   });
@@ -123,6 +132,8 @@ function applyStartupMode(mode: AppPreferences['startupMode']) {
 if (hasSingleInstanceLock) app.on('second-instance', () => { void handleSecondInstance(); });
 
 if (hasSingleInstanceLock) app.whenReady().then(async () => {
+  const rivalsAssetCache = new RivalsAssetCache(path.join(app.getPath('userData'), 'rivals-assets'));
+  protocol.handle('rivals-asset', (request) => rivalsAssetCache.handle(request.url));
   store = new ProfileStore(app.getPath('userData'));
   const existingLauncherSkip = await getLauncherSkipStatus();
   const existingPreferences = await store.preferences();
@@ -130,6 +141,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   const updatesConfigured = app.isPackaged && existsSync(updateConfigPath);
   let updaterEnabled = existingPreferences.autoUpdates;
   let updateCancellation: { cancel(): void } | null = null;
+  let notifiedUpdateVersion = '';
   const updaterStatus = (state: AppUpdateStatus['state'], message: string, extra: Partial<AppUpdateStatus> = {}): AppUpdateStatus => ({
     enabled: updaterEnabled,
     configured: updatesConfigured,
@@ -144,7 +156,17 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   autoUpdater.on('update-available', (info) => { if (updaterEnabled) publishUpdateStatus(updaterStatus('available', `Rival Shift ${info.version} is available and downloading.`, { availableVersion: info.version })); });
   autoUpdater.on('download-progress', (progress) => { if (updaterEnabled) publishUpdateStatus(updaterStatus('downloading', `Downloading Rival Shift ${updateStatus.availableVersion ?? ''}…`, { availableVersion: updateStatus.availableVersion, progress: Math.max(0, Math.min(100, progress.percent)) })); });
   autoUpdater.on('update-not-available', () => { if (updaterEnabled) publishUpdateStatus(updaterStatus('not-available', 'You are running the latest available version.')); });
-  autoUpdater.on('update-downloaded', (info) => { updateCancellation = null; if (updaterEnabled) publishUpdateStatus(updaterStatus('downloaded', `Rival Shift ${info.version} is ready to install.`, { availableVersion: info.version, progress: 100 })); });
+  autoUpdater.on('update-downloaded', (info) => {
+    updateCancellation = null;
+    if (!updaterEnabled) return;
+    publishUpdateStatus(updaterStatus('downloaded', `Rival Shift ${info.version} is ready to install.`, { availableVersion: info.version, progress: 100 }));
+    if (Notification.isSupported() && notifiedUpdateVersion !== info.version) {
+      notifiedUpdateVersion = info.version;
+      const notification = new Notification({ title: 'Update ready to install', body: `Rival Shift ${info.version} has finished downloading. Open Rival Shift to install it.` });
+      notification.on('click', showMainWindow);
+      notification.show();
+    }
+  });
   autoUpdater.on('error', (error) => { updateCancellation = null; if (updaterEnabled) publishUpdateStatus(updaterStatus('error', error.message || 'The update check failed.')); });
   const checkForUpdates = async () => {
     const preferences = await store.preferences();
@@ -282,6 +304,14 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     finally { gameLaunchPollActive = false; }
   };
   ipcMain.handle('steam:list', () => listSteamAccounts());
+  ipcMain.handle('window:minimize', () => mainWindow?.minimize());
+  ipcMain.handle('window:toggle-maximize', () => {
+    if (!mainWindow) return false;
+    if (mainWindow.isMaximized()) mainWindow.unmaximize(); else mainWindow.maximize();
+    return mainWindow.isMaximized();
+  });
+  ipcMain.handle('window:close', () => mainWindow?.close());
+  ipcMain.handle('window:is-maximized', () => Boolean(mainWindow?.isMaximized()));
   ipcMain.handle('steam:open-login', () => openSteamLogin());
   ipcMain.handle('game:running', () => isMarvelRivalsRunning());
   ipcMain.handle('game:launch-current', () => launchCurrentGame());
@@ -294,6 +324,9 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle('profiles:storage-path', () => store.path());
   ipcMain.handle('profiles:save', (_event, profile: RivalProfile) => store.save(profile));
   ipcMain.handle('profiles:remove', (_event, steamId64: string) => store.remove(steamId64));
+  ipcMain.handle('accounts:hidden', () => store.hiddenAccounts());
+  ipcMain.handle('accounts:hide', (_event, steamId64: string) => store.hideAccount(steamId64));
+  ipcMain.handle('accounts:restore-hidden', () => store.restoreHiddenAccounts());
   ipcMain.handle('profiles:open', (_event, uid: string) => shell.openExternal(buildPlayerProfileUrl(uid)));
   const syncProfile = async (steamId64: string) => {
     const profile = await store.get(steamId64);

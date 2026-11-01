@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createElectronTransport, normalizeLiveMatchResponse, normalizeRivalsDataResponses, normalizeSkins, normalizeTopSnipers, normalizeTrackedPlayer, rankProgress } = require('../dist-electron/rivals-data-api.js');
+const { createElectronTransport, normalizeLiveMatchResponse, normalizeRivalsDataResponses, normalizeSkins, normalizeTopSnipers, normalizeTrackedPlayer, overallPeakRank, rankProgress } = require('../dist-electron/rivals-data-api.js');
 
 test('skin inventory responses normalize current and legacy Rivals Data field names', () => {
   assert.deepEqual(normalizeSkins({ skins: [
@@ -29,8 +29,8 @@ test('SDK responses normalize into the single Rivals Data profile model', () => 
       leaderboard: { 19: 84 },
       match_history_is_visible: 1,
       rank_game_season: {
-        old: { update_time: 10, level: 20, battle_count: 10, win_count: 5, rank_score: 4300 },
-        current: { update_time: 20, level: 20, battle_count: 30, win_count: 24, rank_score: 4877.186 },
+        old: { update_time: 10, level: 20, battle_count: 10, win_count: 5, rank_score: 4300, max_level: 21, max_rank_score: 5088 },
+        current: { update_time: 20, level: 20, battle_count: 30, win_count: 24, rank_score: 4877.186, max_level: 20, max_rank_score: 4892 },
       },
     },
     [
@@ -52,12 +52,14 @@ test('SDK responses normalize into the single Rivals Data profile model', () => 
     { rank: 'Celestial 2', score: 4877, wins: 24, losses: 6, matches: 30, winRate: 80 });
   assert.equal(result.stats.rankProgress, -23);
   assert.equal(result.stats.rankProgressMax, 100);
+  assert.equal(result.stats.peakRank, 'Celestial 1');
+  assert.equal(result.stats.peakRankScore, 88);
   assert.equal(result.stats.rankIconUrl, 'https://rivalsdata.com/assets/ranks/celestial.webp');
   assert.equal(result.stats.rankIconRemoteUrl, result.stats.rankIconUrl);
   assert.equal(result.stats.leaderboardRank, '#84');
   assert.equal(result.stats.factionName, 'Night Shift');
   assert.equal(result.stats.matchHistoryVisible, true);
-  assert.equal(result.stats.profileIconUrl, 'https://rivalsdata.com/assets/icons/31065203.webp');
+  assert.equal(result.stats.profileIconUrl, 'https://cdn.rivalsdata.com/assets/icons/31065203.webp');
   assert.deepEqual(result.stats.heroes, ['The Hood', 'Magneto']);
   assert.equal(result.stats.heroStats[0].iconUrl, 'https://rivalsdata.com/assets/heroes/the-hood.webp');
   assert.deepEqual(result.stats.proficiency.map(({ name, level }) => ({ name, level })), [{ name: 'Magneto', level: 40 }, { name: 'The Hood', level: 12 }]);
@@ -141,7 +143,7 @@ test('top sniper groups queued, in-game, and online top-1,000 players in priorit
     { leaderboardPosition: 9, name: 'Grouped', presenceText: 'In team (2/6)' },
     { leaderboardPosition: 70, name: 'Online', presenceText: 'Online' },
   ]);
-  assert.equal(result[2].iconUrl, 'https://rivalsdata.com/assets/icons/31060001.webp');
+  assert.equal(result[2].iconUrl, 'https://cdn.rivalsdata.com/assets/icons/31060001.webp');
   assert.equal(result[2].winRate, 66.7);
 });
 
@@ -179,7 +181,7 @@ test('Electron transport switches permanently to its browser fallback after a Cl
 test('tracked players preserve Rivals Data presence, team size, and last-seen state', () => {
   const inTeam = normalizeTrackedPlayer({ uid: 12, name: 'Party', icon: 31060001, level: 42, status: { state: 4, team_member_count: 2, max_member: 6 }, rank_game_season: { current: { update_time: 20, level: 18, rank_score: 4722 } } }, { uid: '12' }, true);
   assert.deepEqual({ presence: inTeam.presence, text: inTeam.presenceText, favorite: inTeam.favorite, rank: inTeam.rank, score: inTeam.rankScore, progress: inTeam.rankProgress }, { presence: 'in-team', text: 'In team (2/6)', favorite: true, rank: 'Grandmaster 1', score: 4722, progress: 22 });
-  assert.equal(inTeam.iconUrl, 'https://rivalsdata.com/assets/icons/31060001.webp');
+  assert.equal(inTeam.iconUrl, 'https://cdn.rivalsdata.com/assets/icons/31060001.webp');
 
   const inGame = normalizeTrackedPlayer({ uid: 13, name: 'Playing', status: { state: 10, game_play_mode_id: 200 } }, { uid: '13' });
   assert.deepEqual({ presence: inGame.presence, text: inGame.presenceText }, { presence: 'in-game', text: 'In game (Competitive)' });
@@ -203,8 +205,8 @@ test('SDK live responses normalize into lobby teams with rank progress and detai
       },
     },
     {
-      22: { rank_game_season: { current: { update_time: 20, level: 23, rank_score: 5300 } } },
-      680173547: { rank_game_season: { current: { update_time: 20, level: 20, rank_score: 4877.186 } } },
+      22: { rank_game_season: { old: { update_time: 10, level: 20, rank_score: 4880, max_level: 22, max_rank_score: 5206 }, current: { update_time: 20, level: 23, rank_score: 5300, max_level: 23, max_rank_score: 5355 } } },
+      680173547: { rank_game_season: { old: { update_time: 10, level: 18, rank_score: 4710, max_level: 21, max_rank_score: 5088 }, current: { update_time: 20, level: 20, rank_score: 4877.186, max_level: 20, max_rank_score: 4892 } } },
     },
   );
 
@@ -218,10 +220,27 @@ test('SDK live responses normalize into lobby teams with rank progress and detai
   const current = snapshot.teams[0].players.find((player) => player.uid === '680173547');
   assert.deepEqual({ rank: current.rank, score: current.rankScore, party: current.inParty, wins: current.wins, losses: current.losses, winRate: current.winRate },
     { rank: 'Celestial 2', score: -23, party: true, wins: 24, losses: 6, winRate: 80 });
+  assert.deepEqual({ rank: current.peakRank, score: current.peakRankScore }, { rank: 'Celestial 1', score: 88 });
   assert.deepEqual(current.heroes.map((hero) => hero.name), ['The Hood']);
   assert.deepEqual(current.heroStats[0], { name: 'The Hood', iconUrl: 'https://rivalsdata.com/assets/heroes/the-hood.webp', matches: 12, winRate: 75 });
   assert.deepEqual({ name: current.proficiency[0].name, level: current.proficiency[0].level }, { name: 'Magneto', level: 40 });
   assert.equal(snapshot.teams[1].players[0].rankScore, 230);
+  assert.deepEqual({ rank: snapshot.teams[1].players[0].peakRank, score: snapshot.teams[1].players[0].peakRankScore }, { rank: 'One Above All', score: 285 });
+});
+
+test('overall peak selects the highest achieved rank across every season', () => {
+  const peak = overallPeakRank({
+    rank_game_season: {
+      newest: { update_time: 30, level: 18, rank_score: 4720, max_level: 18, max_rank_score: 4762 },
+      middle: { update_time: 20, level: 19, rank_score: 4810, max_level: 20, max_rank_score: 4963 },
+      oldest: { update_time: 10, level: 20, rank_score: 4900, max_level: 20, max_rank_score: 4977 },
+    },
+  });
+  assert.deepEqual(peak, {
+    rank: 'Celestial 2',
+    score: 77,
+    iconUrl: 'https://rivalsdata.com/assets/ranks/celestial.webp',
+  });
 });
 
 test('live matchmaking rating is never clamped into a fake -30 rank progress', () => {
