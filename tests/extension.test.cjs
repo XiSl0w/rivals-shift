@@ -215,11 +215,13 @@ test('live-game search stops after finding a match while hidden names refresh un
 
 test('player search offers a protected three-second auto-refresh loop', () => {
   const source = fs.readFileSync(path.join(root, 'src', 'App.tsx'), 'utf8');
-  assert.match(source, /playerAutoRefresh/);
+  assert.match(source, /\[playerAutoRefresh, setPlayerAutoRefresh\] = useState\(false\)/);
   assert.match(source, /setInterval\(\(\) => void searchPlayers\(\), 3_000\)/);
   assert.match(source, /playerSearchInFlight\.current/);
   assert.match(source, /Stop auto search/);
   assert.match(source, /Searching every 3 seconds/);
+  assert.match(source, /activeTab !== 'players'\) setPlayerAutoRefresh\(false\)/);
+  assert.match(source, /setQuery\(event\.target\.value\); if \(autoRefresh\) onToggleAutoRefresh\(\)/);
 });
 
 test('expanded live-game players grow the board into the outer scroll surface', () => {
