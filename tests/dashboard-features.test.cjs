@@ -34,6 +34,8 @@ test('hero intelligence, privacy, removal, and redesigned account hub are presen
   assert.match(appSource, /className="account-explorer"/);
   assert.match(appSource, /className="account-card-overview"/);
   assert.match(appSource, />OVERALL PEAK</);
+  assert.match(appSource, /<PeakRankIcon profile=\{profile\}/);
+  assert.match(styles, /\.peak-rank-icon/);
   assert.match(appSource, /className="card-open-stats"/);
   assert.match(appSource, /> Open stats<\/button>/);
   assert.match(appSource, /className="level-progress"/);

@@ -20,6 +20,8 @@ const profiles: Record<string, RivalProfile> = {
 // Keep the browser demo exercising demotion protection, where a division can
 // legitimately show signed progress down to -30.
 Object.assign(profiles[accounts[1].steamId64].stats ?? {}, { rankScore: 4277, rankProgress: -23 });
+Object.assign(profiles[accounts[0].steamId64].stats ?? {}, { peakRank: 'One Above All', peakRankScore: 147, peakRankIconUrl: 'https://rivalsdata.com/assets/ranks/one-above-all.webp' });
+Object.assign(profiles[accounts[1].steamId64].stats ?? {}, { peakRank: 'Celestial 1', peakRankScore: 83, peakRankIconUrl: 'https://rivalsdata.com/assets/ranks/celestial.webp' });
 Object.assign(profiles[accounts[0].steamId64].stats ?? {}, {
   skinInventoryValue: 5_200,
   eventSkinsOwned: 2,

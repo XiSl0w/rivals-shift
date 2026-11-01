@@ -413,7 +413,7 @@ h1, h2, h3, p { margin: 0; }
   min-width: 0;
   height: 80px;
   display: grid;
-  grid-template-columns: minmax(190px,1.2fr) minmax(160px,.9fr);
+  grid-template-columns: minmax(145px,.92fr) minmax(210px,1.22fr);
   gap: 8px;
 }
 .account-rank-spotlight {
@@ -465,6 +465,13 @@ h1, h2, h3, p { margin: 0; }
 }
 .account-card-metric b { color: #dedde4; font: 800 13px 'Manrope'; letter-spacing: -.03em; }
 .account-card-metric.peak-metric b { color: var(--accent-2); }
+.account-card-metric.peak-metric { padding: 6px; align-items: center; gap: 2px; text-align: center; }
+.account-card-metric.peak-metric > small { align-self: stretch; text-align: left; }
+.peak-rank-icon,
+.peak-rank-icon-fallback { width: 24px; height: 24px; flex: 0 0 24px; object-fit: contain; }
+.peak-rank-icon-fallback { display: grid; place-items: center; color: #585a68; font: 800 10px 'Manrope'; }
+.account-card-metric.peak-metric > b { width: 100%; overflow: hidden; font-size: 7.5px; line-height: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.account-card-metric.peak-metric > em { width: 100%; font-size: 5.5px; text-align: center; }
 .account-card-metric em {
   overflow: hidden;
   color: #60626f;
