@@ -590,9 +590,14 @@ export function normalizeSkins(payload: unknown): PlayerSkin[] {
 }
 
 function isCloudflareChallenge(status: number, headers: Headers, data: unknown): boolean {
-  if (status !== 403) return false;
   if (headers.get('cf-mitigated')?.toLowerCase() === 'challenge') return true;
-  return typeof data === 'string' && /(?:Just a moment|cdn-cgi\/challenge-platform|cf_chl_opt)/i.test(data);
+  if (status < 400) return false;
+  const challengeText = typeof data === 'string'
+    ? data
+    : data && typeof data === 'object'
+      ? JSON.stringify(data)
+      : '';
+  return /(?:Just a moment|cdn-cgi\/challenge-platform|cf_chl_opt|turnstile(?: verification)? required)/i.test(challengeText);
 }
 
 export function createElectronTransport(
@@ -600,8 +605,19 @@ export function createElectronTransport(
   challengeTransport?: RivalsDataTransport,
 ): RivalsDataTransport {
   let useChallengeTransport = false;
+  const runChallengeTransport = async (request: Parameters<RivalsDataTransport>[0]) => {
+    try {
+      return await challengeTransport!(request);
+    } catch (error) {
+      if (request.signal.aborted) throw request.signal.reason;
+      return {
+        status: 503,
+        data: { error: error instanceof Error ? error.message : 'Rivals Data verification failed.' },
+      };
+    }
+  };
   return async (request) => {
-    if (useChallengeTransport && challengeTransport) return challengeTransport(request);
+    if (useChallengeTransport && challengeTransport) return runChallengeTransport(request);
     const response = await chromiumSession.fetch(request.url, {
       method: request.method,
       headers: request.headers,
@@ -615,7 +631,7 @@ export function createElectronTransport(
       : await response.text().catch(() => '');
     if (challengeTransport && isCloudflareChallenge(response.status, response.headers, data)) {
       useChallengeTransport = true;
-      return challengeTransport(request);
+      return runChallengeTransport(request);
     }
     if (response.ok && !contentType.includes('application/json')) {
       return { status: 502, data: { error: 'Rivals Data returned a non-JSON response.' } };
@@ -633,6 +649,12 @@ class RivalsDataBrowserTransport {
   private async createWindow(): Promise<BrowserWindow> {
     const browser = new BrowserWindow({
       show: false,
+      width: 560,
+      height: 700,
+      minWidth: 460,
+      minHeight: 560,
+      title: 'Rival Shift · Verify Rivals Data',
+      autoHideMenuBar: true,
       webPreferences: {
         session: this.chromiumSession,
         contextIsolation: true,
@@ -641,6 +663,10 @@ class RivalsDataBrowserTransport {
       },
     });
     browser.setSkipTaskbar(true);
+    browser.webContents.on('page-title-updated', (event) => {
+      event.preventDefault();
+      browser.setTitle('Rival Shift · Verify Rivals Data');
+    });
     browser.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     browser.webContents.on('will-navigate', (event, url) => {
       if (new URL(url).origin !== 'https://api.rivalsdata.com') event.preventDefault();
@@ -652,15 +678,40 @@ class RivalsDataBrowserTransport {
     this.window = browser;
     await browser.loadURL('https://api.rivalsdata.com/').catch(() => undefined);
 
-    const deadline = Date.now() + 30_000;
+    let verificationShown = false;
+    const showVerificationAt = Date.now() + 750;
+    const deadline = Date.now() + 120_000;
     while (!browser.isDestroyed() && Date.now() < deadline) {
-      const title = browser.webContents.getTitle();
-      const cookies = await this.chromiumSession.cookies.get({ url: 'https://api.rivalsdata.com/' });
-      if (!/just a moment/i.test(title) && cookies.some((cookie) => cookie.name === 'cf_clearance')) return browser;
+      let title = '';
+      let cookies: Awaited<ReturnType<Session['cookies']['get']>> = [];
+      try {
+        title = browser.webContents.getTitle();
+        cookies = await this.chromiumSession.cookies.get({ url: 'https://api.rivalsdata.com/' });
+      } catch {
+        if (browser.isDestroyed()) break;
+        throw new Error('Rivals Data verification could not read the browser session. Try again.');
+      }
+      if (!/just a moment/i.test(title) && cookies.some((cookie) => cookie.name === 'cf_clearance')) {
+        if (browser.isVisible()) browser.hide();
+        return browser;
+      }
+      if (!verificationShown && Date.now() >= showVerificationAt) {
+        verificationShown = true;
+        browser.setSkipTaskbar(false);
+        browser.center();
+        browser.setAlwaysOnTop(true, 'floating');
+        browser.show();
+        browser.focus();
+        setTimeout(() => {
+          if (!browser.isDestroyed()) browser.setAlwaysOnTop(false);
+        }, 1_500);
+      }
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    browser.destroy();
-    throw new Error('Rivals Data browser verification did not complete. Try the browser extension connection instead.');
+    if (!browser.isDestroyed()) browser.destroy();
+    throw new Error(verificationShown
+      ? 'Rivals Data verification was closed or timed out. Try again and finish the verification prompt, or use the browser extension connection.'
+      : 'Rivals Data browser verification could not open. Try the browser extension connection instead.');
   }
 
   private ensureWindow(): Promise<BrowserWindow> {
@@ -695,8 +746,7 @@ class RivalsDataBrowserTransport {
     let browser = await this.ensureWindow();
     if (request.signal.aborted) throw request.signal.reason;
     let response = await this.execute(browser, request);
-    const header = Object.entries(response.headers ?? {}).find(([name]) => name.toLowerCase() === 'cf-mitigated')?.[1];
-    if (response.status === 403 && (header?.toLowerCase() === 'challenge' || typeof response.data === 'string' && /cf_chl_opt/i.test(response.data))) {
+    if (isCloudflareChallenge(response.status, new Headers(response.headers), response.data)) {
       browser.destroy();
       browser = await this.ensureWindow();
       if (request.signal.aborted) throw request.signal.reason;

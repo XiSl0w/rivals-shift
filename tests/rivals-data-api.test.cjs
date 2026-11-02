@@ -178,6 +178,44 @@ test('Electron transport switches permanently to its browser fallback after a Cl
   assert.deepEqual(fallbackRequests, [request.url, request.url]);
 });
 
+test('Electron transport treats Rivals Data Turnstile JSON errors as a browser challenge', async () => {
+  let directRequests = 0;
+  const fallbackRequests = [];
+  const transport = createElectronTransport({
+    async fetch() {
+      directRequests += 1;
+      return new Response(JSON.stringify({ error: 'Turnstile verification required' }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  }, async (request) => {
+    fallbackRequests.push(request.url);
+    return { status: 200, data: { ok: true } };
+  });
+  const request = { url: 'https://api.rivalsdata.com/player', method: 'POST', headers: {}, body: { uid: '264256233' }, signal: new AbortController().signal };
+  assert.deepEqual(await transport(request), { status: 200, data: { ok: true } });
+  assert.deepEqual(await transport(request), { status: 200, data: { ok: true } });
+  assert.equal(directRequests, 1);
+  assert.deepEqual(fallbackRequests, [request.url, request.url]);
+});
+
+test('Electron transport preserves an actionable browser-verification failure', async () => {
+  const transport = createElectronTransport({
+    async fetch() {
+      return new Response('<title>Just a moment...</title>', {
+        status: 403,
+        headers: { 'content-type': 'text/html', 'cf-mitigated': 'challenge' },
+      });
+    },
+  }, async () => { throw new Error('Rivals Data verification was closed or timed out.'); });
+  const request = { url: 'https://api.rivalsdata.com/player', method: 'POST', headers: {}, body: { uid: '264256233' }, signal: new AbortController().signal };
+  assert.deepEqual(await transport(request), {
+    status: 503,
+    data: { error: 'Rivals Data verification was closed or timed out.' },
+  });
+});
+
 test('tracked players preserve Rivals Data presence, team size, and last-seen state', () => {
   const inTeam = normalizeTrackedPlayer({ uid: 12, name: 'Party', icon: 31060001, level: 42, status: { state: 4, team_member_count: 2, max_member: 6 }, rank_game_season: { current: { update_time: 20, level: 18, rank_score: 4722 } } }, { uid: '12' }, true);
   assert.deepEqual({ presence: inTeam.presence, text: inTeam.presenceText, favorite: inTeam.favorite, rank: inTeam.rank, score: inTeam.rankScore, progress: inTeam.rankProgress }, { presence: 'in-team', text: 'In team (2/6)', favorite: true, rank: 'Grandmaster 1', score: 4722, progress: 22 });

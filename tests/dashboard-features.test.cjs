@@ -27,7 +27,7 @@ test('account groups, privacy mode, and removed accounts persist in the local st
 test('hero intelligence, privacy, removal, and redesigned account hub are present without compare or health navigation tabs', () => {
   assert.match(appSource, /function HeroIntelligencePage/);
   assert.match(appSource, /function RemoveAccountModal/);
-  assert.match(appSource, /What’s new in 0\.9\.40/);
+  assert.match(appSource, /What’s new in 0\.9\.41/);
   assert.doesNotMatch(appSource, /aria-label="Compare accounts"/);
   assert.doesNotMatch(appSource, /aria-label="Account health"/);
   assert.match(styles, /\.privacy-mode/);
