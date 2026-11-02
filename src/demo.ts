@@ -48,8 +48,8 @@ let launcherSkip = false;
 let preferences: AppPreferences = { theme: 'nebula', rivalsDataMode: 'api', discordRichPresence: true, quickSwitchShortcut: false, quickAccessShortcut: 'CommandOrControl+Shift+R', closeAction: 'ask', matchNotifications: true, backgroundMonitoring: false, skipLauncher: false, directLaunchReminder: true, autoUpdates: true, privacyMode: false, startupMode: 'off' };
 const demoUpdateReady = new URLSearchParams(window.location.search).has('updateReady');
 let updateStatus: AppUpdateStatus = demoUpdateReady
-  ? { enabled: true, configured: true, state: 'downloaded', currentVersion: '0.9.39', availableVersion: '0.9.40', progress: 100, message: 'Rival Shift 0.9.40 is ready to install.' }
-  : { enabled: true, configured: false, state: 'unconfigured', currentVersion: '0.9.39', message: 'Add a release feed to activate automatic updates.' };
+  ? { enabled: true, configured: true, state: 'downloaded', currentVersion: '0.9.40', availableVersion: '0.9.41', progress: 100, message: 'Rival Shift 0.9.41 is ready to install.' }
+  : { enabled: true, configured: false, state: 'unconfigured', currentVersion: '0.9.40', message: 'Add a release feed to activate automatic updates.' };
 
 export const demoApi: RivalShiftApi = {
   async minimizeWindow() {},
@@ -70,6 +70,7 @@ export const demoApi: RivalShiftApi = {
   async restoreHiddenAccounts() { hiddenAccounts = []; return []; },
   async switchAccount(steamId64) { await new Promise((resolve) => setTimeout(resolve, 1100)); accounts.forEach((account) => { account.currentSession = account.steamId64 === steamId64; }); return { ok: true, accountName: accounts.find((account) => account.steamId64 === steamId64)?.accountName ?? '' }; },
   async openPlayerProfile(uid) { window.open(`https://rivalsdata.com/player/${encodeURIComponent(uid)}`, '_blank'); },
+  async openDiscordInvite() { window.open('https://discord.gg/dae6UVsgJM', '_blank', 'noopener,noreferrer'); },
   async copyText(text) { await navigator.clipboard.writeText(text); },
   async syncProfile(steamId64) { const profile = profiles[steamId64]; if (!profile) throw new Error('Save the player identity first.'); return profile; },
   async refreshAllProfiles() { return { ...profiles }; },

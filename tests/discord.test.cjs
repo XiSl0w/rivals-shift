@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { DISCORD_APPLICATION_ID, DiscordPresence, buildDiscordActivity, discordPresenceStartedAt, discordRankIconUrl } = require('../dist-electron/discord.js');
+const { DISCORD_APPLICATION_ID, RIVAL_SHIFT_WEBSITE_URL, DiscordPresence, buildDiscordActivity, discordPresenceStartedAt, discordRankIconUrl } = require('../dist-electron/discord.js');
 
 test('Discord presence uses the built-in application ID', () => {
   const presence = new DiscordPresence(() => {});
@@ -29,7 +29,8 @@ test('Discord activity shows the viewed account, rank, and public rank badge', (
   assert.equal(activity.smallImageText, 'Celestial 2 · Competitive');
   assert.equal(activity.largeImageText, 'Rival Shift · Marvel Rivals command center');
   assert.equal(activity.largeImageKey, undefined);
-  assert.equal(activity.buttons, undefined);
+  assert.deepEqual(activity.buttons, [{ label: 'Get Rivalshift', url: 'https://rivalshift.xislow.dev' }]);
+  assert.equal(activity.buttons[0].url, RIVAL_SHIFT_WEBSITE_URL);
   assert.equal(buildDiscordActivity(4, 'name', new Date(), 'Diamond 1', 'data:image/webp;base64,rank').smallImageKey, 'https://rivalsdata.com/assets/ranks/diamond.webp');
   assert.equal(buildDiscordActivity(4, '', new Date()).details, 'Marvel Rivals command center');
   assert.equal(buildDiscordActivity(4, '', new Date()).state, '4 accounts ready to shift');

@@ -319,6 +319,7 @@ export type RivalShiftApi = {
   hideAccount(steamId64: string): Promise<string[]>;
   restoreHiddenAccounts(): Promise<string[]>;
   openPlayerProfile(uid: string): Promise<void>;
+  openDiscordInvite(): Promise<void>;
   copyText(text: string): Promise<void>;
   syncProfile(steamId64: string): Promise<RivalProfile>;
   refreshAllProfiles(): Promise<Record<string, RivalProfile>>;

@@ -4,7 +4,7 @@ import { buildPlayerProfileUrl } from './data-sources';
 import type { HeroPerformance, HeroProficiency, LiveMatchSnapshot, MatchSummary, PlayerSkin, RivalProfile, RivalsDataExtensionStatus } from './types';
 
 export const RIVALS_BRIDGE_PORT = 38573;
-export const RIVALS_DATA_EXTENSION_VERSION = '0.9.39';
+export const RIVALS_DATA_EXTENSION_VERSION = '0.9.40';
 
 export type RivalsDataPageSnapshot = {
   uid?: string;

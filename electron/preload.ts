@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('rivalShift', {
   hideAccount: (steamId64: string): Promise<string[]> => ipcRenderer.invoke('accounts:hide', steamId64),
   restoreHiddenAccounts: (): Promise<string[]> => ipcRenderer.invoke('accounts:restore-hidden'),
   openPlayerProfile: (uid: string): Promise<void> => ipcRenderer.invoke('profiles:open', uid),
+  openDiscordInvite: (): Promise<void> => ipcRenderer.invoke('external:open-discord'),
   copyText: async (text: string): Promise<void> => { clipboard.writeText(text); },
   syncProfile: (steamId64: string): Promise<RivalProfile> => ipcRenderer.invoke('profiles:sync', steamId64),
   refreshAllProfiles: (): Promise<Record<string, RivalProfile>> => ipcRenderer.invoke('profiles:refresh-all'),

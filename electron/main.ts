@@ -14,6 +14,8 @@ import { decryptProfileBackup, encryptProfileBackup } from './backup';
 import { RivalsAssetCache } from './rivals-asset-cache';
 import type { AppPreferences, AppPrompt, AppUpdateStatus, DiscordLivePresence, MatchSummary, RivalProfile, TrackedPlayer } from './types';
 
+const DISCORD_INVITE_URL = 'https://discord.gg/dae6UVsgJM';
+
 let mainWindow: BrowserWindow | null = null;
 let store: ProfileStore;
 let discord: DiscordPresence;
@@ -328,6 +330,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle('accounts:hide', (_event, steamId64: string) => store.hideAccount(steamId64));
   ipcMain.handle('accounts:restore-hidden', () => store.restoreHiddenAccounts());
   ipcMain.handle('profiles:open', (_event, uid: string) => shell.openExternal(buildPlayerProfileUrl(uid)));
+  ipcMain.handle('external:open-discord', () => shell.openExternal(DISCORD_INVITE_URL));
   const syncProfile = async (steamId64: string) => {
     const profile = await store.get(steamId64);
     if (!profile) throw new Error('Save the player identity first.');

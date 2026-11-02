@@ -3,6 +3,7 @@ import type { DiscordLivePresence, DiscordStatus } from './types';
 
 type StatusListener = (status: DiscordStatus) => void;
 export const DISCORD_APPLICATION_ID = '1535197736289439786';
+export const RIVAL_SHIFT_WEBSITE_URL = 'https://rivalshift.xislow.dev';
 
 const DISCORD_RANK_ICON_URLS: Record<string, string> = {
   bronze: 'https://rivalsdata.com/assets/ranks/bronze.webp',
@@ -60,6 +61,7 @@ export function buildDiscordActivity(accountCount: number, selectedName: string,
     startTimestamp: discordPresenceStartedAt(startedAt, liveGame),
     largeImageText: 'Rival Shift · Marvel Rivals command center',
     ...(publicRankIconUrl ? { smallImageKey: publicRankIconUrl, smallImageText: `${rank} · Competitive` } : {}),
+    buttons: [{ label: 'Get Rivalshift', url: RIVAL_SHIFT_WEBSITE_URL }],
     instance: false,
   };
 }
