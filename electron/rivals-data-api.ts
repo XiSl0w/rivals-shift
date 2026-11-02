@@ -607,7 +607,9 @@ export function createElectronTransport(
   let useChallengeTransport = false;
   const runChallengeTransport = async (request: Parameters<RivalsDataTransport>[0]) => {
     try {
-      return await challengeTransport!(request);
+      const response = await challengeTransport!(request);
+      if (response.status >= 200 && response.status < 400) useChallengeTransport = false;
+      return response;
     } catch (error) {
       if (request.signal.aborted) throw request.signal.reason;
       return {
@@ -669,33 +671,56 @@ class RivalsDataBrowserTransport {
     });
     browser.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     browser.webContents.on('will-navigate', (event, url) => {
-      if (new URL(url).origin !== 'https://api.rivalsdata.com') event.preventDefault();
+      const hostname = new URL(url).hostname;
+      if (hostname !== 'rivalsdata.com' && hostname !== 'www.rivalsdata.com') event.preventDefault();
     });
     browser.on('closed', () => {
       if (this.window === browser) this.window = null;
       this.ready = null;
     });
     this.window = browser;
-    await browser.loadURL('https://api.rivalsdata.com/').catch(() => undefined);
+    await browser.loadURL('https://rivalsdata.com/').catch(() => undefined);
 
     let verificationShown = false;
+    let verificationTriggered = false;
     const showVerificationAt = Date.now() + 750;
     const deadline = Date.now() + 120_000;
     while (!browser.isDestroyed() && Date.now() < deadline) {
       let title = '';
-      let cookies: Awaited<ReturnType<Session['cookies']['get']>> = [];
+      let pageText = '';
+      let apiProbe: { status: number; body: string } | null = null;
       try {
+        if (!verificationTriggered) {
+          verificationTriggered = Boolean(await browser.webContents.executeJavaScript(`(() => {
+            const playerLink = document.querySelector('a[href^="/player/"]');
+            if (!playerLink) return false;
+            playerLink.click();
+            return true;
+          })()`, true));
+        }
         title = browser.webContents.getTitle();
-        cookies = await this.chromiumSession.cookies.get({ url: 'https://api.rivalsdata.com/' });
+        pageText = await browser.webContents.executeJavaScript('document.body?.innerText || ""', true);
+        apiProbe = await browser.webContents.executeJavaScript(`fetch('https://api.rivalsdata.com/leaderboards?limit=1&os=1', {
+          headers: { Accept: 'application/json' },
+          credentials: 'include'
+        }).then(async (response) => ({ status: response.status, body: await response.text() })).catch(() => null)`, true);
       } catch {
         if (browser.isDestroyed()) break;
-        throw new Error('Rivals Data verification could not read the browser session. Try again.');
+        // Cloudflare navigates between challenge stages. DOM execution can be
+        // rejected briefly while the document is replaced; keep polling.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        continue;
       }
-      if (!/just a moment/i.test(title) && cookies.some((cookie) => cookie.name === 'cf_clearance')) {
+      const pageChallengeVisible = /(?:just a moment|performing security verification|verifying you're human|enable javascript and cookies to continue)/i.test(`${title}\n${pageText}`);
+      const apiReady = apiProbe != null
+        && apiProbe.status >= 200
+        && apiProbe.status < 300
+        && !/(?:just a moment|turnstile(?: verification)? required|cdn-cgi\/challenge-platform)/i.test(apiProbe.body);
+      if (apiReady) {
         if (browser.isVisible()) browser.hide();
         return browser;
       }
-      if (!verificationShown && Date.now() >= showVerificationAt) {
+      if (!verificationShown && (pageChallengeVisible || verificationTriggered) && Date.now() >= showVerificationAt) {
         verificationShown = true;
         browser.setSkipTaskbar(false);
         browser.center();
@@ -710,7 +735,7 @@ class RivalsDataBrowserTransport {
     }
     if (!browser.isDestroyed()) browser.destroy();
     throw new Error(verificationShown
-      ? 'Rivals Data verification was closed or timed out. Try again and finish the verification prompt, or use the browser extension connection.'
+      ? 'Rivals Data verification was closed or timed out. Finish both Cloudflare verification steps, or use the browser extension connection.'
       : 'Rivals Data browser verification could not open. Try the browser extension connection instead.');
   }
 
@@ -723,34 +748,37 @@ class RivalsDataBrowserTransport {
     return this.ready;
   }
 
-  private async execute(browser: BrowserWindow, request: Parameters<RivalsDataTransport>[0]): Promise<Awaited<ReturnType<RivalsDataTransport>>> {
-    const script = `fetch(${JSON.stringify(request.url)}, {
-      method: ${JSON.stringify(request.method)},
-      headers: ${JSON.stringify(request.headers)},
-      ${request.method === 'POST' ? `body: ${JSON.stringify(JSON.stringify(request.body ?? {}))},` : ''}
-      credentials: 'include'
-    }).then(async (response) => {
-      const contentType = response.headers.get('content-type') || '';
-      const bodyText = await response.text();
-      let data = bodyText;
-      if (contentType.includes('application/json')) {
-        try { data = JSON.parse(bodyText); } catch { data = null; }
-      }
-      return { status: response.status, data, headers: Object.fromEntries(response.headers.entries()) };
-    })`;
-    return browser.webContents.executeJavaScript(script, true);
+  private async execute(request: Parameters<RivalsDataTransport>[0]): Promise<Awaited<ReturnType<RivalsDataTransport>>> {
+    const response = await this.chromiumSession.fetch(request.url, {
+      method: request.method,
+      headers: request.headers,
+      ...(request.method === 'POST' ? { body: JSON.stringify(request.body ?? {}) } : {}),
+      signal: request.signal,
+      credentials: 'include',
+    });
+    const contentType = response.headers.get('content-type') ?? '';
+    const data = contentType.includes('application/json')
+      ? await response.json().catch(() => null)
+      : await response.text().catch(() => '');
+    return { status: response.status, data, headers: Object.fromEntries(response.headers.entries()) };
   }
 
   async request(request: Parameters<RivalsDataTransport>[0]): Promise<Awaited<ReturnType<RivalsDataTransport>>> {
     if (request.signal.aborted) throw request.signal.reason;
     let browser = await this.ensureWindow();
     if (request.signal.aborted) throw request.signal.reason;
-    let response = await this.execute(browser, request);
+    let response = await this.execute(request);
     if (isCloudflareChallenge(response.status, new Headers(response.headers), response.data)) {
       browser.destroy();
       browser = await this.ensureWindow();
       if (request.signal.aborted) throw request.signal.reason;
-      response = await this.execute(browser, request);
+      response = await this.execute(request);
+      if (isCloudflareChallenge(response.status, new Headers(response.headers), response.data)) {
+        return {
+          status: 503,
+          data: { error: 'Rivals Data verification completed, but the API still requires Turnstile. Open the verification again; if it continues, use the browser extension connection.' },
+        };
+      }
     }
     return response;
   }

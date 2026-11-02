@@ -156,12 +156,16 @@ test('Electron transport rejects a successful HTML challenge as an API response'
   assert.match(response.data.error, /non-JSON/i);
 });
 
-test('Electron transport switches permanently to its browser fallback after a Cloudflare challenge', async () => {
+test('Electron transport returns to its normal session after browser verification succeeds', async () => {
   let directRequests = 0;
   const fallbackRequests = [];
   const transport = createElectronTransport({
     async fetch() {
       directRequests += 1;
+      if (directRequests > 1) return new Response(JSON.stringify({ ok: true, direct: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
       return new Response('<html><title>Just a moment...</title></html>', {
         status: 403,
         headers: { 'content-type': 'text/html', 'cf-mitigated': 'challenge' },
@@ -173,9 +177,9 @@ test('Electron transport switches permanently to its browser fallback after a Cl
   });
   const request = { url: 'https://api.rivalsdata.com/player', method: 'POST', headers: {}, body: {}, signal: new AbortController().signal };
   assert.deepEqual((await transport(request)).data, { ok: true });
-  assert.deepEqual((await transport(request)).data, { ok: true });
-  assert.equal(directRequests, 1);
-  assert.deepEqual(fallbackRequests, [request.url, request.url]);
+  assert.deepEqual((await transport(request)).data, { ok: true, direct: true });
+  assert.equal(directRequests, 2);
+  assert.deepEqual(fallbackRequests, [request.url]);
 });
 
 test('Electron transport treats Rivals Data Turnstile JSON errors as a browser challenge', async () => {
@@ -184,6 +188,10 @@ test('Electron transport treats Rivals Data Turnstile JSON errors as a browser c
   const transport = createElectronTransport({
     async fetch() {
       directRequests += 1;
+      if (directRequests > 1) return new Response(JSON.stringify({ ok: true, direct: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
       return new Response(JSON.stringify({ error: 'Turnstile verification required' }), {
         status: 403,
         headers: { 'content-type': 'application/json' },
@@ -195,9 +203,9 @@ test('Electron transport treats Rivals Data Turnstile JSON errors as a browser c
   });
   const request = { url: 'https://api.rivalsdata.com/player', method: 'POST', headers: {}, body: { uid: '264256233' }, signal: new AbortController().signal };
   assert.deepEqual(await transport(request), { status: 200, data: { ok: true } });
-  assert.deepEqual(await transport(request), { status: 200, data: { ok: true } });
-  assert.equal(directRequests, 1);
-  assert.deepEqual(fallbackRequests, [request.url, request.url]);
+  assert.deepEqual(await transport(request), { status: 200, data: { ok: true, direct: true }, headers: { 'content-type': 'application/json' } });
+  assert.equal(directRequests, 2);
+  assert.deepEqual(fallbackRequests, [request.url]);
 });
 
 test('Electron transport preserves an actionable browser-verification failure', async () => {
@@ -214,6 +222,16 @@ test('Electron transport preserves an actionable browser-verification failure', 
     status: 503,
     data: { error: 'Rivals Data verification was closed or timed out.' },
   });
+});
+
+test('Rivals Data browser fallback triggers the site verification dialog and waits for API access', () => {
+  const source = require('node:fs').readFileSync(require('node:path').resolve(__dirname, '..', 'electron', 'rivals-data-api.ts'), 'utf8');
+  assert.match(source, /document\.querySelector\('a\[href\^="\/player\/"\]'\)/);
+  assert.match(source, /playerLink\.click\(\)/);
+  assert.match(source, /apiProbe\.status >= 200/);
+  assert.match(source, /verifying you're human/);
+  assert.match(source, /turnstile\(\?: verification\)\? required/);
+  assert.match(source, /Finish both Cloudflare verification steps/);
 });
 
 test('tracked players preserve Rivals Data presence, team size, and last-seen state', () => {
