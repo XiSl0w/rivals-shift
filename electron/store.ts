@@ -109,12 +109,15 @@ export class ProfileStore {
       return data.hiddenAccounts;
     });
   }
-  async restoreHiddenAccounts(): Promise<string[]> {
+  async restoreHiddenAccounts(steamId64s?: string[]): Promise<string[]> {
     return this.mutate(async () => {
       const data = await this.read();
-      data.hiddenAccounts = [];
+      const restore = steamId64s == null ? null : new Set(steamId64s.filter((id) => typeof id === 'string' && id.trim()));
+      data.hiddenAccounts = restore == null
+        ? []
+        : [...new Set(data.hiddenAccounts ?? [])].filter((id) => !restore.has(id));
       await this.write(data);
-      return [];
+      return data.hiddenAccounts;
     });
   }
   async saveFavoritePlayer(player: TrackedPlayer): Promise<TrackedPlayer[]> {

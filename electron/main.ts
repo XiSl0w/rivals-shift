@@ -328,30 +328,87 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle('profiles:remove', (_event, steamId64: string) => store.remove(steamId64));
   ipcMain.handle('accounts:hidden', () => store.hiddenAccounts());
   ipcMain.handle('accounts:hide', (_event, steamId64: string) => store.hideAccount(steamId64));
-  ipcMain.handle('accounts:restore-hidden', () => store.restoreHiddenAccounts());
+  ipcMain.handle('accounts:restore-hidden', (_event, steamId64s?: string[]) => store.restoreHiddenAccounts(Array.isArray(steamId64s) ? steamId64s : undefined));
   ipcMain.handle('profiles:open', (_event, uid: string) => shell.openExternal(buildPlayerProfileUrl(uid)));
   ipcMain.handle('external:open-discord', () => shell.openExternal(DISCORD_INVITE_URL));
-  const syncProfile = async (steamId64: string) => {
+  type ProfileRefreshScope = 'summary' | 'full';
+  const settleWithSignal = <T,>(promise: Promise<T>, signal: AbortSignal): Promise<T> => {
+    if (signal.aborted) return Promise.reject(signal.reason);
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = () => reject(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+    });
+  };
+  const profileRefreshes = new Map<string, { scope: ProfileRefreshScope; promise: Promise<RivalProfile> }>();
+  const performProfileSync = async (steamId64: string, scope: ProfileRefreshScope) => {
     const profile = await store.get(steamId64);
     if (!profile) throw new Error('Save the player identity first.');
     let current = profile;
+    // API mode may need to complete a visible Cloudflare verification before
+    // the first request can run. The previous 25/60-second limits expired while
+    // that verification was still in progress and made healthy requests fail.
+    const timeoutMs = scope === 'summary' ? 105_000 : 135_000;
+    const refreshDeadline = AbortSignal.timeout(timeoutMs);
     try {
       const preferences = await store.preferences();
-      current = preferences.rivalsDataMode === 'api'
-        ? await rivalsDataApi.refresh(profile)
-        : mergeRivalsDataSnapshot(profile, await rivalsDataBridge.refresh(profile));
+      const operation = preferences.rivalsDataMode === 'api'
+        ? (scope === 'summary' ? rivalsDataApi.refreshSummary(profile, refreshDeadline) : rivalsDataApi.refresh(profile, refreshDeadline))
+        : rivalsDataBridge.refresh(profile).then((snapshot) => mergeRivalsDataSnapshot(profile, snapshot));
+      current = await settleWithSignal(operation, refreshDeadline);
       return store.save(current);
     } catch (error) {
-      const failed: RivalProfile = { ...current, status: 'error', error: error instanceof Error ? error.message : 'Player data lookup failed.' };
+      const message = refreshDeadline.aborted
+        ? `Refresh timed out after ${timeoutMs / 1_000} seconds. Cached stats were kept and the remaining accounts will continue.`
+        : error instanceof Error ? error.message : 'Player data lookup failed.';
+      const disposedBrowserSession = /object has been destroyed|object destroyed|(?:render )?frame was disposed|webcontents (?:was |is )?destroyed|browser session restarted/i.test(message);
+      if (profile.stats && (scope === 'summary' || disposedBrowserSession)) {
+        const cached = await store.save({ ...profile, status: 'synced', error: undefined, refreshNotice: undefined, refreshMessage: undefined });
+        const refreshMessage = disposedBrowserSession
+          ? 'The Rivals Data browser session restarted. Cached stats were kept; refresh again when ready.'
+          : message;
+        const fallback: RivalProfile = { ...cached, refreshNotice: 'cached', refreshMessage };
+        return fallback;
+      }
+      const failed: RivalProfile = { ...current, status: 'error', error: message };
       return store.save(failed);
     }
   };
-  ipcMain.handle('profiles:sync', (_event, steamId64: string) => syncWithNotification(steamId64));
+  const syncProfile = (steamId64: string, scope: ProfileRefreshScope = 'full'): Promise<RivalProfile> => {
+    const inFlight = profileRefreshes.get(steamId64);
+    if (inFlight) {
+      if (inFlight.scope === 'full' || scope === 'summary') return inFlight.promise;
+      return inFlight.promise.then(() => syncProfile(steamId64, 'full'));
+    }
+    const refresh = performProfileSync(steamId64, scope).finally(() => {
+      if (profileRefreshes.get(steamId64)?.promise === refresh) profileRefreshes.delete(steamId64);
+    });
+    profileRefreshes.set(steamId64, { scope, promise: refresh });
+    return refresh;
+  };
+  ipcMain.handle('profiles:sync', (_event, input: string | { steamId64: string; scope?: ProfileRefreshScope }) => {
+    const steamId64 = typeof input === 'string' ? input : input.steamId64;
+    const scope = typeof input === 'string' ? 'full' : input.scope === 'summary' ? 'summary' : 'full';
+    return scope === 'summary' ? syncProfile(steamId64, scope) : syncWithNotification(steamId64);
+  });
   ipcMain.handle('profiles:refresh-all', async () => {
     const profiles = await store.profiles();
     const linked = Object.values(profiles).filter((profile) => profile.inGameName.trim() || profile.uid.trim());
     if (!linked.length) return profiles;
-    await Promise.all(linked.map((profile) => syncProfile(profile.steamId64)));
+    const preferences = await store.preferences();
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < linked.length) {
+        const profile = linked[cursor];
+        cursor += 1;
+        await syncProfile(profile.steamId64, 'summary');
+      }
+    };
+    // API requests share one protected browser session and are deliberately
+    // serialized. Starting parallel deadlines only makes queued accounts time
+    // out before their request begins. The extension can safely run two jobs.
+    const concurrency = preferences.rivalsDataMode === 'api' ? 1 : 2;
+    await Promise.all(Array.from({ length: Math.min(concurrency, linked.length) }, worker));
     return store.profiles();
   });
   ipcMain.handle('players:search', (_event, query: string) => rivalsDataApi.searchPlayers(query));
@@ -432,13 +489,13 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     } else showMainWindow();
   });
   ipcMain.handle('profiles:export', async (_event, passphrase: string) => {
-    const chosen = await dialog.showSaveDialog(mainWindow!, { title: 'Export encrypted Rival Shift backup', defaultPath: `rival-shift-backup-${new Date().toISOString().slice(0, 10)}.rsbackup`, filters: [{ name: 'Rival Shift encrypted backup', extensions: ['rsbackup'] }] });
+    const chosen = await dialog.showSaveDialog(mainWindow!, { title: 'Export shareable Rival Shift profile pack', defaultPath: `rival-shift-profile-pack-${new Date().toISOString().slice(0, 10)}.rsbackup`, filters: [{ name: 'Rival Shift encrypted profile pack', extensions: ['rsbackup'] }] });
     if (chosen.canceled || !chosen.filePath) return { canceled: true };
     await writeFile(chosen.filePath, await encryptProfileBackup(await store.profiles(), passphrase), 'utf8');
     return { canceled: false, path: chosen.filePath };
   });
   ipcMain.handle('profiles:import', async (_event, passphrase: string) => {
-    const chosen = await dialog.showOpenDialog(mainWindow!, { title: 'Import encrypted Rival Shift backup', properties: ['openFile'], filters: [{ name: 'Rival Shift encrypted backup', extensions: ['rsbackup'] }] });
+    const chosen = await dialog.showOpenDialog(mainWindow!, { title: 'Import Rival Shift profile pack', properties: ['openFile'], filters: [{ name: 'Rival Shift encrypted profile pack', extensions: ['rsbackup'] }] });
     if (chosen.canceled || !chosen.filePaths[0]) return { canceled: true, count: 0, profiles: await store.profiles() };
     const incoming = await decryptProfileBackup(await readFile(chosen.filePaths[0], 'utf8'), passphrase);
     const profiles = await store.replaceProfiles({ ...await store.profiles(), ...incoming });

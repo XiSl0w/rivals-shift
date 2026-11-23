@@ -4,7 +4,7 @@ import { buildPlayerProfileUrl } from './data-sources';
 import type { HeroPerformance, HeroProficiency, LiveMatchSnapshot, MatchSummary, PlayerSkin, RivalProfile, RivalsDataExtensionStatus } from './types';
 
 export const RIVALS_BRIDGE_PORT = 38573;
-export const RIVALS_DATA_EXTENSION_VERSION = '0.9.42';
+export const RIVALS_DATA_EXTENSION_VERSION = '0.9.49';
 
 export type RivalsDataPageSnapshot = {
   uid?: string;
@@ -176,9 +176,10 @@ export class RivalsDataBridge {
     return new Promise<RivalsDataPageSnapshot>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.jobs.delete(id);
-        this.lastJobError = `Rivals Data did not finish loading ${profile.inGameName || profile.uid} within two minutes.`;
+        this.cancellations.set(id, Date.now());
+        this.lastJobError = `Rivals Data did not finish loading ${profile.inGameName || profile.uid} within 60 seconds.`;
         reject(new Error(this.lastJobError));
-      }, 120_000);
+      }, 60_000);
       this.jobs.set(id, {
         id,
         uid: profile.uid.trim(),

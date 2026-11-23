@@ -230,6 +230,8 @@ export type RivalProfile = {
   updatedAt: string | null;
   status: 'unlinked' | 'linked' | 'synced' | 'error';
   error?: string;
+  refreshNotice?: 'cached';
+  refreshMessage?: string;
   rankHistory?: RankHistoryPoint[];
   stats?: {
     level?: number;
@@ -317,11 +319,11 @@ export type RivalShiftApi = {
   removeProfile(steamId64: string): Promise<void>;
   getHiddenAccounts(): Promise<string[]>;
   hideAccount(steamId64: string): Promise<string[]>;
-  restoreHiddenAccounts(): Promise<string[]>;
+  restoreHiddenAccounts(steamId64s: string[]): Promise<string[]>;
   openPlayerProfile(uid: string): Promise<void>;
   openDiscordInvite(): Promise<void>;
   copyText(text: string): Promise<void>;
-  syncProfile(steamId64: string): Promise<RivalProfile>;
+  syncProfile(steamId64: string, scope?: 'summary' | 'full'): Promise<RivalProfile>;
   refreshAllProfiles(): Promise<Record<string, RivalProfile>>;
   searchRivalsDataPlayers(query: string): Promise<TrackedPlayer[]>;
   getTopSnipers(): Promise<TopSniperPlayer[]>;

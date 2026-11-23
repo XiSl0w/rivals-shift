@@ -15,19 +15,41 @@ export const MARVEL_RIVALS_PROCESS_NAMES = [
   'MarvelRivals.exe',
   'Marvel-Win64-Shipping.exe',
 ] as const;
+const STEAM_CLIENT_PROCESS_NAMES = [
+  'steam.exe',
+  'steamwebhelper.exe',
+  'GameOverlayUI.exe',
+  'gameoverlayui64.exe',
+] as const;
 const avatarCache = new Map<string, string | null>();
 
+export type WindowsProcessRow = { imageName: string; pid: number };
+
+export function parseTaskListProcesses(taskListOutput: string): WindowsProcessRow[] {
+  return taskListOutput.split(/\r?\n/).map((line) => {
+    const csv = line.match(/^"([^"]+)","(\d+)"/);
+    if (csv) return { imageName: csv[1], pid: Number(csv[2]) };
+    const columns = line.trim().match(/^(\S+\.exe)\s+(\d+)\s/i);
+    return columns ? { imageName: columns[1], pid: Number(columns[2]) } : null;
+  }).filter((row): row is WindowsProcessRow => Boolean(row && Number.isInteger(row.pid) && row.pid > 0));
+}
+
+function matchingProcesses(taskListOutput: string, names: readonly string[]): WindowsProcessRow[] {
+  const accepted = new Set(names.map((name) => name.toLowerCase()));
+  return parseTaskListProcesses(taskListOutput).filter((row) => accepted.has(row.imageName.toLowerCase()));
+}
+
 export function hasMarvelRivalsProcess(taskListOutput: string): boolean {
-  const imageNames = taskListOutput.match(/^"?([^",\r\n]+\.exe)"?(?:,|\s)/gim) ?? [];
-  return imageNames.some((row) => {
-    const imageName = row.replace(/[",\s]/g, '').toLowerCase();
-    return MARVEL_RIVALS_PROCESS_NAMES.some((name) => name.toLowerCase() === imageName);
-  });
+  return matchingProcesses(taskListOutput, MARVEL_RIVALS_PROCESS_NAMES).length > 0;
+}
+
+async function taskListProcesses(names: readonly string[]): Promise<WindowsProcessRow[]> {
+  const { stdout } = await execFileAsync('tasklist.exe', ['/FO', 'CSV', '/NH'], { windowsHide: true });
+  return matchingProcesses(stdout, names);
 }
 
 async function marvelRivalsIsRunning(): Promise<boolean> {
-  const { stdout } = await execFileAsync('tasklist.exe', ['/FO', 'CSV', '/NH'], { windowsHide: true });
-  return hasMarvelRivalsProcess(stdout);
+  return (await taskListProcesses(MARVEL_RIVALS_PROCESS_NAMES)).length > 0;
 }
 
 export async function isMarvelRivalsRunning(): Promise<boolean> {
@@ -36,12 +58,18 @@ export async function isMarvelRivalsRunning(): Promise<boolean> {
   catch { return false; }
 }
 
-async function waitForMarvelRivalsToClose(timeoutMs: number): Promise<boolean> {
+async function waitForMarvelRivalsToClose(timeoutMs: number, stableChecks = 4): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
+  let consecutiveClosedChecks = 0;
   while (Date.now() < deadline) {
-    try { if (!await marvelRivalsIsRunning()) return true; }
+    try {
+      if (!await marvelRivalsIsRunning()) {
+        consecutiveClosedChecks += 1;
+        if (consecutiveClosedChecks >= stableChecks) return true;
+      } else consecutiveClosedChecks = 0;
+    }
     catch { throw new Error('Could not confirm that Marvel Rivals closed. Close it manually, then try switching again.'); }
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await new Promise((resolve) => setTimeout(resolve, 400));
   }
   return false;
 }
@@ -177,9 +205,21 @@ export function selectLoginUser(document: VdfNode, steamId64: string): string {
     const active = id === steamId64 ? '1' : '0';
     setValue(value, 'MostRecent', active);
     setValue(value, 'AutoLogin', active);
-    setValue(value, 'RememberPassword', active);
+    // RememberPassword describes whether Steam retained this account's login,
+    // not which account is active. Clearing it on every other row causes those
+    // saved sessions to be treated as signed out on later quick launches.
+    if (active === '1') setValue(value, 'RememberPassword', '1');
   }
   return accountName;
+}
+
+export function disableSteamAccountChooser(config: string): string {
+  // Keep config.vdf byte-for-byte intact apart from this setting. Parsing and
+  // serializing Steam's whole config could discard duplicate or unknown keys.
+  return config.replace(
+    /(^[ \t]*"AlwaysShowUserChooser"[ \t]+")([^"\r\n]*)("[^\r\n]*$)/im,
+    (_line, prefix: string, _value: string, suffix: string) => `${prefix}0${suffix}`,
+  );
 }
 
 export async function listSteamAccounts(override?: string): Promise<SteamSnapshot> {
@@ -226,6 +266,35 @@ function launchSteam(steamRoot: string, args: string[] = [], windowsHide = false
   child.unref();
 }
 
+async function waitForSteamState(running: boolean, timeoutMs: number, stableChecks = 3): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  let matchingChecks = 0;
+  while (Date.now() < deadline) {
+    try {
+      const processes = await taskListProcesses(STEAM_CLIENT_PROCESS_NAMES);
+      const stateMatches = running ? processes.some((row) => row.imageName.toLowerCase() === 'steam.exe') : processes.length === 0;
+      matchingChecks = stateMatches ? matchingChecks + 1 : 0;
+      if (matchingChecks >= stableChecks) return true;
+    } catch { /* Retry transient tasklist failures until the deadline. */ }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return false;
+}
+
+async function startSteamAndWait(steamRoot: string): Promise<void> {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    launchSteam(steamRoot, ['-silent'], true);
+    if (await waitForSteamState(true, 15_000, 2)) {
+      // Steam accepts app-launch commands reliably once its main process has
+      // remained alive for a short initialization window.
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error('Steam could not be reopened automatically. Open Steam, then try launching Marvel Rivals again.');
+}
+
 export async function openSteamLogin(override?: string): Promise<void> {
   if (process.platform !== 'win32') throw new Error('Adding a Steam account is currently supported on Windows only.');
   const steamRoot = await discoverSteamRoot(override);
@@ -252,19 +321,10 @@ export async function openSteamLogin(override?: string): Promise<void> {
 }
 
 async function stopSteam(): Promise<void> {
-  const names = ['steam.exe', 'steamwebhelper.exe', 'GameOverlayUI.exe'];
-  for (const name of names) {
+  for (const name of STEAM_CLIENT_PROCESS_NAMES) {
     try { await execFileAsync('taskkill.exe', ['/F', '/IM', name, '/T'], { windowsHide: true }); } catch { /* not running */ }
   }
-  const deadline = Date.now() + 8000;
-  while (Date.now() < deadline) {
-    try {
-      const { stdout } = await execFileAsync('tasklist.exe', ['/FI', 'IMAGENAME eq steam.exe', '/NH'], { windowsHide: true });
-      if (!/steam\.exe/i.test(stdout)) return;
-    } catch { return; }
-    await new Promise((resolve) => setTimeout(resolve, 300));
-  }
-  throw new Error('Steam did not close in time. Close it manually, then try again.');
+  if (!await waitForSteamState(false, 12_000, 4)) throw new Error('Steam did not close in time. Close it manually, then try again.');
 }
 
 export async function stopMarvelRivals(): Promise<void> {
@@ -274,10 +334,16 @@ export async function stopMarvelRivals(): Promise<void> {
   catch { throw new Error('Could not check whether Marvel Rivals is running. Try switching again.'); }
   if (!running) return;
 
-  for (const name of MARVEL_RIVALS_PROCESS_NAMES) {
-    try { await execFileAsync('taskkill.exe', ['/F', '/IM', name, '/T'], { windowsHide: true }); } catch { /* not running */ }
+  // Use exact PIDs from tasklist and repeat because the launcher/anti-cheat can
+  // briefly respawn a child while the parent tree is shutting down.
+  for (let pass = 0; pass < 3; pass += 1) {
+    const processes = await taskListProcesses(MARVEL_RIVALS_PROCESS_NAMES);
+    if (!processes.length && await waitForMarvelRivalsToClose(2_000, 3)) return;
+    for (const processRow of processes) {
+      try { await execFileAsync('taskkill.exe', ['/F', '/PID', String(processRow.pid), '/T'], { windowsHide: true }); } catch { /* protected or already exited */ }
+    }
+    if (await waitForMarvelRivalsToClose(2_500, 4)) return;
   }
-  if (await waitForMarvelRivalsToClose(1500)) return;
 
   // The game commonly runs elevated because of its anti-cheat. Ask for elevation
   // only when the ordinary same-user process-tree kill was not enough.
@@ -299,6 +365,14 @@ async function writeAtomic(file: string, contents: string): Promise<void> {
   catch (error) { await rm(temporary, { force: true }); throw error; }
 }
 
+async function disableSteamAccountChooserForQuickLaunch(steamRoot: string): Promise<void> {
+  const configPath = path.join(steamRoot, 'config', 'config.vdf');
+  if (!await exists(configPath)) return;
+  const original = await readFile(configPath, 'utf8');
+  const updated = disableSteamAccountChooser(original);
+  if (updated !== original) await writeAtomic(configPath, updated);
+}
+
 export async function switchSteamAccount(steamId64: string, launchGame: boolean, override?: string, skipLauncher = false, beforeLaunch?: () => Promise<void>): Promise<{ ok: true; accountName: string }> {
   if (process.platform !== 'win32') throw new Error('Steam switching is currently supported on Windows only.');
   if (!/^\d{15,20}$/.test(steamId64)) throw new Error('Invalid Steam ID.');
@@ -306,6 +380,7 @@ export async function switchSteamAccount(steamId64: string, launchGame: boolean,
   if (!steamRoot) throw new Error('Steam installation not found.');
   const loginPath = path.join(steamRoot, 'config', 'loginusers.vdf');
   const original = await readFile(loginPath, 'utf8');
+  const previousAccountName = parseAccounts(parseVdf(original)).find((account) => account.currentSession)?.accountName;
   const document = parseVdf(original);
   const accountName = selectLoginUser(document, steamId64);
 
@@ -314,23 +389,38 @@ export async function switchSteamAccount(steamId64: string, launchGame: boolean,
   await stopSteam();
 
   const backupPath = path.join(steamRoot, 'config', 'loginusers.vdf_last');
-  await copyFile(loginPath, backupPath);
+  let steamRestarted = false;
+  let backupCreated = false;
+  let accountStateCommitted = false;
   try {
+    // Recheck after Steam closes. Anti-cheat or the launcher can respawn a child
+    // during shutdown; never write account state while any game process remains.
+    await stopMarvelRivals();
+    await copyFile(loginPath, backupPath);
+    backupCreated = true;
+    // Steam's native "Who's playing?" preference overrides AutoLoginUser. TcNo
+    // disables it while switching as well; quick launch must do the same.
+    await disableSteamAccountChooserForQuickLaunch(steamRoot);
     await writeAtomic(loginPath, stringifyVdf(document));
     await writeRegistry(accountName);
+    accountStateCommitted = true;
+
+    if (launchGame && beforeLaunch) await beforeLaunch();
+    await startSteamAndWait(steamRoot);
+    steamRestarted = true;
+    if (launchGame) launchSteam(steamRoot, buildSteamLaunchArgs(true, skipLauncher), true);
+    return { ok: true, accountName };
   } catch (error) {
-    await copyFile(backupPath, loginPath).catch(() => undefined);
+    if (!accountStateCommitted && backupCreated) {
+      await copyFile(backupPath, loginPath).catch(() => undefined);
+      if (previousAccountName) await writeRegistry(previousAccountName).catch(() => undefined);
+    }
+    // A failed switch must never strand the user with Steam closed. Preserve the
+    // selected account if it was already written and make a best effort restart.
+    if (!steamRestarted) {
+      try { await startSteamAndWait(steamRoot); steamRestarted = true; }
+      catch { launchSteam(steamRoot); }
+    }
     throw error;
   }
-
-  const args = buildSteamLaunchArgs(launchGame, skipLauncher);
-  if (launchGame && beforeLaunch) await beforeLaunch();
-  const child = spawn(path.join(steamRoot, 'steam.exe'), args, {
-    cwd: steamRoot,
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: launchGame,
-  });
-  child.unref();
-  return { ok: true, accountName };
 }

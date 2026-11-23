@@ -45,24 +45,6 @@ async function loadPeakRank(job, uid) {
   }
 }
 
-async function addLivePeakRanks(job, snapshot) {
-  if (snapshot?.status !== 'in-game') return snapshot;
-  const players = (snapshot.teams || []).flatMap((team) => team.players || []);
-  const uids = [...new Set(players.map((player) => player.uid).filter(Boolean))];
-  const peaks = new Map();
-  let nextIndex = 0;
-  const worker = async () => {
-    while (nextIndex < uids.length && !cancelledJobs.has(job.id)) {
-      const uid = uids[nextIndex++];
-      const peak = await loadPeakRank(job, uid);
-      if (peak?.peakRank) peaks.set(uid, peak);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(4, uids.length) }, worker));
-  for (const player of players) Object.assign(player, peaks.get(player.uid) || {});
-  return snapshot;
-}
-
 async function runJob(job) {
   if (activeJobs.has(job.id)) return;
   activeJobs.set(job.id, new Set());
@@ -82,8 +64,7 @@ async function runJob(job) {
       result = await sendToProfile(tab.id, { ...job, scrapeOnly: true });
     }
     if (!result?.ok) throw new Error(result?.error || 'Could not read the Rivals Data profile.');
-    if (job.kind === 'live-match') result.snapshot = await addLivePeakRanks(job, result.snapshot);
-    else {
+    if (job.kind !== 'live-match') {
       const peak = await loadPeakRank(job, job.uid);
       if (peak?.peakRank) Object.assign(result.snapshot, peak);
     }

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createElectronTransport, normalizeLiveMatchResponse, normalizeRivalsDataResponses, normalizeSkins, normalizeTopSnipers, normalizeTrackedPlayer, overallPeakRank, rankProgress } = require('../dist-electron/rivals-data-api.js');
+const { createElectronTransport, isDestroyedBrowserError, normalizeLiveMatchResponse, normalizeRivalsDataResponses, normalizeRivalsDataSummary, normalizeSkins, normalizeTopSnipers, normalizeTrackedPlayer, overallPeakRank, rankProgress } = require('../dist-electron/rivals-data-api.js');
 
 test('skin inventory responses normalize current and legacy Rivals Data field names', () => {
   assert.deepEqual(normalizeSkins({ skins: [
@@ -81,6 +81,51 @@ test('rank progress follows the signed -30 to 100 division range', () => {
   assert.equal(rankProgress(5078, 21), 78);
   assert.equal(rankProgress(5463.7, 23), undefined);
   assert.equal(rankProgress(undefined, 20), undefined);
+});
+
+test('summary refresh updates card fields without clearing cached detail data', () => {
+  const cached = {
+    ...profile,
+    stats: {
+      heroStats: [{ name: 'Magneto', matches: 9 }],
+      proficiency: [{ name: 'Magneto', level: 40 }],
+      matchHistory: [{ mode: 'Competitive', timeAgo: '2m ago' }],
+      skins: [{ name: 'Costume' }],
+    },
+  };
+  const result = normalizeRivalsDataSummary(cached, {
+    uid: 680173547,
+    name: 'Veswa',
+    level: 81,
+    rank_game_season: { current: { update_time: 20, level: 20, battle_count: 40, win_count: 30, rank_score: 4890 } },
+  });
+  assert.deepEqual({ level: result.stats.level, matches: result.stats.matches, wins: result.stats.wins, rank: result.stats.rank }, { level: 81, matches: 40, wins: 30, rank: 'Celestial 2' });
+  assert.deepEqual(result.stats.heroStats, cached.stats.heroStats);
+  assert.deepEqual(result.stats.proficiency, cached.stats.proficiency);
+  assert.deepEqual(result.stats.matchHistory, cached.stats.matchHistory);
+  assert.deepEqual(result.stats.skins, cached.stats.skins);
+});
+
+test('full refresh keeps cached detail sections when secondary endpoints time out', () => {
+  const cached = {
+    ...profile,
+    stats: {
+      rank: 'Celestial 2',
+      heroStats: [{ name: 'Magneto', matches: 9 }],
+      proficiency: [{ name: 'Magneto', level: 40 }],
+      matchHistory: [{ mode: 'Competitive', timeAgo: '2m ago' }],
+      skins: [{ id: 'skin-1', name: 'Costume' }],
+    },
+  };
+  const result = normalizeRivalsDataResponses(cached, {
+    uid: 680173547,
+    rank_game_season: { current: { update_time: 30, level: 18, rank_score: 4650 } },
+  }, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined);
+  assert.equal(result.stats.rank, 'Grandmaster 1');
+  assert.deepEqual(result.stats.heroStats, cached.stats.heroStats);
+  assert.deepEqual(result.stats.proficiency, cached.stats.proficiency);
+  assert.deepEqual(result.stats.matchHistory, cached.stats.matchHistory);
+  assert.deepEqual(result.stats.skins, cached.stats.skins);
 });
 
 test('duration-based punishments expire from their start time', () => {
@@ -208,6 +253,37 @@ test('Electron transport treats Rivals Data Turnstile JSON errors as a browser c
   assert.deepEqual(fallbackRequests, [request.url]);
 });
 
+test('Electron transport shares one browser verification across concurrent requests', async () => {
+  let verified = false;
+  let verificationRequests = 0;
+  let releaseVerification;
+  const verificationGate = new Promise((resolve) => { releaseVerification = resolve; });
+  const transport = createElectronTransport({
+    async fetch() {
+      if (verified) return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+      return new Response(JSON.stringify({ error: 'turnstile required' }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  }, async () => {
+    verificationRequests += 1;
+    await verificationGate;
+    verified = true;
+    return { status: 200, data: { ok: true, verified: true } };
+  });
+  const first = transport({ url: 'https://api.rivalsdata.com/player', method: 'POST', headers: {}, body: { uid: '1' }, signal: new AbortController().signal });
+  const second = transport({ url: 'https://api.rivalsdata.com/player', method: 'POST', headers: {}, body: { uid: '2' }, signal: new AbortController().signal });
+  await new Promise((resolve) => setImmediate(resolve));
+  releaseVerification();
+  const responses = await Promise.all([first, second]);
+  assert.equal(verificationRequests, 1);
+  assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+});
+
 test('Electron transport preserves an actionable browser-verification failure', async () => {
   const transport = createElectronTransport({
     async fetch() {
@@ -224,14 +300,92 @@ test('Electron transport preserves an actionable browser-verification failure', 
   });
 });
 
+test('Electron transport aborts a browser verification that never settles', async () => {
+  const transport = createElectronTransport({
+    async fetch() {
+      return new Response(JSON.stringify({ error: 'turnstile required' }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  }, async () => new Promise(() => {}));
+  const controller = new AbortController();
+  const request = transport({ url: 'https://api.rivalsdata.com/player', method: 'POST', headers: {}, body: { uid: '1' }, signal: controller.signal });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort(new Error('deadline'));
+  await assert.rejects(request, /deadline/);
+});
+
 test('Rivals Data browser fallback triggers the site verification dialog and waits for API access', () => {
   const source = require('node:fs').readFileSync(require('node:path').resolve(__dirname, '..', 'electron', 'rivals-data-api.ts'), 'utf8');
-  assert.match(source, /document\.querySelector\('a\[href\^="\/player\/"\]'\)/);
-  assert.match(source, /playerLink\.click\(\)/);
-  assert.match(source, /apiProbe\.status >= 200/);
+  assert.match(source, /verificationUrl\(request/);
+  assert.match(source, /rivalsdata\.com\/player\/\$\{bodyUid\}/);
+  assert.match(source, /iframe\[src\*="challenges\.cloudflare\.com"\]/);
+  assert.match(source, /browser\.setSize\(500, 440\)/);
+  assert.match(source, /Network\.getResponseBody/);
+  assert.match(source, /capturedResponse \?\? await this\.executeInPage/);
+  assert.match(source, /visibleChallengeChecks >= 2/);
+  assert.match(source, /element\.checkVisibility/);
+  assert.match(source, /browser\.setSkipTaskbar\(true\);\s*browser\.hide\(\)/);
+  assert.match(source, /apiProbe = capturedResponse \?\? await this\.executeInPage\(browser, request\)/);
+  assert.match(source, /browser\.hide\(\)/);
+  assert.match(source, /if \(request\.signal\.aborted\) \{\s*this\.resetBrowserWindow\(backgroundWindow\)/);
+  assert.match(source, /private requestQueue: Promise<void> = Promise\.resolve\(\)/);
+  assert.match(source, /this\.requestQueue = run\.then/);
+  assert.match(source, /createElectronTransport\(chromiumSession, \(request\) => browserTransport\.request\(request\), true\)/);
+  assert.doesNotMatch(source, /leaderboards\?limit=1&os=1/);
+  assert.match(source, /retryAfter = Date\.now\(\) \+ 60_000/);
   assert.match(source, /verifying you're human/);
   assert.match(source, /turnstile\(\?: verification\)\? required/);
   assert.match(source, /Finish both Cloudflare verification steps/);
+});
+
+test('bulk account refresh serializes protected API work and deduplicates profile requests', () => {
+  const source = require('node:fs').readFileSync(require('node:path').resolve(__dirname, '..', 'electron', 'main.ts'), 'utf8');
+  assert.match(source, /preferences\.rivalsDataMode === 'api' \? 1 : 2/);
+  assert.match(source, /Math\.min\(concurrency, linked\.length\)/);
+  assert.match(source, /profileRefreshes\.get\(steamId64\)/);
+  assert.match(source, /scope === 'summary' \? 105_000 : 135_000/);
+  assert.match(source, /settleWithSignal\(operation, refreshDeadline\)/);
+  assert.match(source, /profile\.stats && \(scope === 'summary' \|\| disposedBrowserSession\)/);
+  assert.match(source, /refreshNotice: 'cached'/);
+  assert.match(source, /refreshSummary\(profile, refreshDeadline\)/);
+  assert.match(source, /Cached stats were kept and the remaining accounts will continue/);
+});
+
+test('destroyed Electron browser sessions are recreated without surfacing the internal error', () => {
+  const apiSource = require('node:fs').readFileSync(require('node:path').resolve(__dirname, '..', 'electron', 'rivals-data-api.ts'), 'utf8');
+  const mainSource = require('node:fs').readFileSync(require('node:path').resolve(__dirname, '..', 'electron', 'main.ts'), 'utf8');
+  assert.match(apiSource, /function isDestroyedBrowserError/);
+  assert.match(apiSource, /this\.resetBrowserWindow\(backgroundWindow\)/);
+  assert.match(apiSource, /for \(let attempt = 0; attempt < 3; attempt \+= 1\)/);
+  assert.match(apiSource, /browser session restarted before the API request completed/);
+  assert.match(mainSource, /The Rivals Data browser session restarted\. Cached stats were kept/);
+});
+
+test('destroyed Electron object detection covers API lifecycle variants', () => {
+  for (const message of [
+    'Object has been destroyed',
+    'Render frame was disposed',
+    'WebContents is destroyed',
+    'Browser window was destroyed',
+    'Session is destroyed',
+  ]) assert.equal(isDestroyedBrowserError(new Error(message)), true, message);
+  assert.equal(isDestroyedBrowserError(new Error('Rivals Data returned HTTP 500')), false);
+});
+
+test('profile refresh shares one deadline across every SDK request', () => {
+  const source = require('node:fs').readFileSync(require('node:path').resolve(__dirname, '..', 'electron', 'rivals-data-api.ts'), 'utf8');
+  assert.match(source, /async refreshSummary\(profile: RivalProfile, signal\?: AbortSignal\)/);
+  assert.match(source, /return normalizeRivalsDataSummary\(profile, player\)/);
+  assert.match(source, /async refresh\(profile: RivalProfile, signal\?: AbortSignal\)/);
+  assert.match(source, /refreshPlayer\(uid, \{ signal \}\)/);
+  assert.match(source, /getPlayerSkins\(uid, \{ signal: detailSignal \}\)/);
+  assert.match(source, /timeoutMs: 100_000/);
+  assert.match(source, /AbortSignal\.timeout\(25_000\)/);
+  const refreshSource = source.slice(source.indexOf('async refreshSummary'), source.indexOf('async liveMatch'));
+  assert.doesNotMatch(refreshSource, /refreshPlayer\(uid, \{ signal \}\)\.catch/);
+  assert.doesNotMatch(refreshSource, /getPlayer\(uid, \{ preferCache: true/);
 });
 
 test('tracked players preserve Rivals Data presence, team size, and last-seen state', () => {
@@ -311,4 +465,27 @@ test('live matchmaking rating is never clamped into a fake -30 rank progress', (
 test('SDK live normalization returns offline without an active in-game state', () => {
   const snapshot = normalizeLiveMatchResponse(profile, { status: { state: 1 } }, {});
   assert.deepEqual({ status: snapshot.status, teams: snapshot.teams }, { status: 'offline', teams: [] });
+});
+
+test('a populated live lobby overrides a stale cached offline profile status', () => {
+  const snapshot = normalizeLiveMatchResponse(
+    profile,
+    { status: { state: 1 } },
+    { mode: 'Competitive', elapsed: '07:55', team_avg_rank: { 0: 4935, 1: 4926 }, players: {
+      2133703603: { uid: 2133703603, side: 0, name: 't1mbur', rank: { level: 20, score: 4963 }, wins: 19, losses: 12 },
+      42: { uid: 42, side: 1, name: 'Opponent', rank: { level: 20, score: 4954 }, wins: 10, losses: 8 },
+    } },
+  );
+  assert.equal(snapshot.status, 'in-game');
+  assert.equal(snapshot.mode, 'Competitive');
+  assert.equal(snapshot.elapsed, '07:55');
+  assert.equal(snapshot.teams.flatMap((team) => team.players).length, 2);
+});
+
+test('SDK live lookup starts with the authoritative endpoint and skips opponent profile fan-out', () => {
+  const source = require('node:fs').readFileSync(require('node:path').resolve(__dirname, '..', 'electron', 'rivals-data-api.ts'), 'utf8');
+  assert.match(source, /const firstLive = client\.getLiveMatch\(uid\)/);
+  assert.match(source, /const deadline = Date\.now\(\) \+ 25_000/);
+  assert.match(source, /setTimeout\(resolve, 2_000\)/);
+  assert.doesNotMatch(source, /const publicUids =/);
 });

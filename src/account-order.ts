@@ -56,6 +56,8 @@ export function sortAccounts(accounts: SteamAccount[], profiles: Record<string, 
   };
 
   return [...accounts].sort((a, b) => {
+    const currentSessionFirst = Number(Boolean(b.currentSession)) - Number(Boolean(a.currentSession));
+    if (currentSessionFirst) return currentSessionFirst;
     const aProfile = profiles[a.steamId64];
     const bProfile = profiles[b.steamId64];
     let primary = 0;

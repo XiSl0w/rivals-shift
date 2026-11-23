@@ -31,7 +31,7 @@ Rival Shift is a Windows-first Electron account switcher focused on **Marvel Riv
 
 ## Installation and sharing
 
-Run `release/Rival Shift Setup 0.9.42.exe`. The borderless custom bootstrapper contains the desktop application and its browser-extension files; recipients do not need the source tree or `node_modules`.
+Run `release/Rival Shift Setup 0.9.49.exe`. The borderless custom bootstrapper contains the desktop application and its browser-extension files; recipients do not need the source tree or `node_modules`.
 
 For public distribution, share the setup executable together with the project license and third-party notices, publish a SHA-256 checksum, and use a trusted Windows code-signing certificate so SmartScreen can identify the publisher. Keep the source-code offer/repository available as required by GPL-3.0.
 
@@ -44,14 +44,16 @@ pnpm install
 pnpm dev
 ```
 
-Public releases contain binaries and updater metadata only. The application source remains local. To publish a version, create a tag against the repository's README-only `main` commit and upload the four generated files from `release/`:
+Public releases contain binaries and updater metadata only. The application source remains local. Use the scripts in `builders/`; new release tags target the repository's public `main` branch by default.
 
 ```powershell
-git tag v0.9.42 origin/main
-git push origin v0.9.42
+.\builders\build-installer.cmd
+.\builders\release-latest.cmd
+# Or run both steps:
+.\builders\build-and-release.cmd
 ```
 
-The packaged app uses Electron's public GitHub Releases provider for `XiSl0w/rivals-shift`. Each release must include `latest.yml`, the raw `Rival-Shift-Payload` installer, its `.blockmap`, and the custom first-install setup executable.
+The release script validates and uploads `latest.yml`, the raw `Rival-Shift-Payload` installer, its `.blockmap`, the custom first-install setup executable, and a generated SHA-256 manifest. It warns about uncommitted local source without uploading it; pass `-RequireClean` when a pristine worktree is mandatory. See `builders/README.md` for dry-run, release-note, draft, and prerelease options.
 
 Before publishing a later version, update the version in `package.json`, `extension/manifest.json`, `electron/rivals-bridge.ts`, and the visible version labels in `src/App.tsx`, then tag that exact version. For signed releases, add `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD` as GitHub Actions repository secrets.
 
@@ -68,7 +70,7 @@ The Rivals Data SDK used by the desktop process is vendored under `vendor/rivals
 
 ## Steam switching safety
 
-Before each switch, Rival Shift force-closes Marvel Rivals and its launcher, closes Steam, saves `loginusers.vdf_last`, updates the selected row's `MostRecent`, `AutoLogin`, and `RememberPassword` values, then writes `HKCU\Software\Valve\Steam\AutoLoginUser` and `RememberPassword`. If the file or registry update fails, the VDF backup is restored.
+Before each switch, Rival Shift force-closes Marvel Rivals and its launcher, closes Steam, saves `loginusers.vdf_last`, updates the `MostRecent` and `AutoLogin` markers, preserves every other account's remembered-login flag, disables Steam's startup account chooser, then writes `HKCU\Software\Valve\Steam\AutoLoginUser` and `RememberPassword`. If the file or registry update fails, the VDF backup is restored.
 
 ## Rivals Data connection modes
 

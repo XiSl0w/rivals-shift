@@ -230,6 +230,8 @@ export type RivalProfile = {
   updatedAt: string | null;
   status: 'unlinked' | 'linked' | 'synced' | 'error';
   error?: string;
+  refreshNotice?: 'cached';
+  refreshMessage?: string;
   rankHistory?: RankHistoryPoint[];
   stats?: {
     level?: number;

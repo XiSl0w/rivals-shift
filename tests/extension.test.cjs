@@ -181,12 +181,12 @@ test('content script handles Rivals Data tabs and never sends a heading as ident
   assert.ok(source.indexOf("kind === 'live-match'") < source.indexOf('await waitForProfileContent()'), 'live-match tab activation must run before profile parsing');
 });
 
-test('live-game background enrichment checks every public lobby UID for peak rank', () => {
+test('live-game background returns the lobby without opening every player profile', () => {
   const source = fs.readFileSync(path.join(root, 'extension', 'background.js'), 'utf8');
-  assert.match(source, /addLivePeakRanks/);
+  assert.doesNotMatch(source, /addLivePeakRanks/);
   assert.match(source, /kind:\s*'peak-rank'/);
   assert.match(source, /rivalsdata\.com\/player\/\$\{encodeURIComponent\(uid\)\}/);
-  assert.match(source, /Math\.min\(4, uids\.length\)/);
+  assert.match(source, /job\.kind !== 'live-match'/);
   assert.match(source, /Object\.assign\(result\.snapshot, peak\)/);
 });
 
@@ -231,6 +231,17 @@ test('expanded live-game players grow the board into the outer scroll surface', 
   assert.match(styles, /\.live-team\s*\{\s*overflow:\s*visible;/);
 });
 
+test('live-game dashboard exposes fast lobby facts and an immediate refresh control', () => {
+  const app = fs.readFileSync(path.join(root, 'src', 'App.tsx'), 'utf8');
+  const styles = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
+  assert.match(app, /className="live-match-facts"/);
+  assert.match(app, />TEAM GAP</);
+  assert.match(app, />DETAILS</);
+  assert.match(app, /className="live-refresh-now"/);
+  assert.match(app, /tracked=\{player\.uid === profile\?\.uid\}/);
+  assert.match(styles, /v0\.9\.49 themed filters, reliable refresh queue, and fast live-lobby dashboard/);
+});
+
 test('player search and the compact two-column connection selector are present', () => {
   const app = fs.readFileSync(path.join(root, 'src', 'App.tsx'), 'utf8');
   const styles = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
@@ -243,7 +254,7 @@ test('player search and the compact two-column connection selector are present',
 
 test('custom setup embeds and displays the Rival Shift icon', () => {
   const installer = fs.readFileSync(path.join(root, 'build', 'CustomInstaller.cs'), 'utf8');
-  const builder = fs.readFileSync(path.join(root, 'scripts', 'build-installer.mjs'), 'utf8');
+  const builder = fs.readFileSync(path.join(root, 'builders', 'build-installer.mjs'), 'utf8');
   assert.match(installer, /Icon = setupIcon/);
   assert.match(installer, /LoadLogoImage\(\)/);
   assert.match(builder, /RivalShiftSetupIcon/);
@@ -290,7 +301,7 @@ test('account cards expose one-click launch and automatic updates remain user co
   const app = fs.readFileSync(path.join(root, 'src', 'App.tsx'), 'utf8');
   const preload = fs.readFileSync(path.join(root, 'electron', 'preload.ts'), 'utf8');
   const main = fs.readFileSync(path.join(root, 'electron', 'main.ts'), 'utf8');
-  const buildInstaller = fs.readFileSync(path.join(root, 'scripts', 'build-installer.mjs'), 'utf8');
+  const buildInstaller = fs.readFileSync(path.join(root, 'builders', 'build-installer.mjs'), 'utf8');
 
   assert.match(app, /account-quick-launch/);
   assert.match(app, /quickLaunchAccount/);

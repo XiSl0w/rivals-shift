@@ -48,8 +48,8 @@ let launcherSkip = false;
 let preferences: AppPreferences = { theme: 'nebula', rivalsDataMode: 'api', discordRichPresence: true, quickSwitchShortcut: false, quickAccessShortcut: 'CommandOrControl+Shift+R', closeAction: 'ask', matchNotifications: true, backgroundMonitoring: false, skipLauncher: false, directLaunchReminder: true, autoUpdates: true, privacyMode: false, startupMode: 'off' };
 const demoUpdateReady = new URLSearchParams(window.location.search).has('updateReady');
 let updateStatus: AppUpdateStatus = demoUpdateReady
-  ? { enabled: true, configured: true, state: 'downloaded', currentVersion: '0.9.42', availableVersion: '0.9.43', progress: 100, message: 'Rival Shift 0.9.43 is ready to install.' }
-  : { enabled: true, configured: false, state: 'unconfigured', currentVersion: '0.9.42', message: 'Add a release feed to activate automatic updates.' };
+  ? { enabled: true, configured: true, state: 'downloaded', currentVersion: '0.9.49', availableVersion: '0.9.50', progress: 100, message: 'Rival Shift 0.9.50 is ready to install.' }
+  : { enabled: true, configured: false, state: 'unconfigured', currentVersion: '0.9.49', message: 'Add a release feed to activate automatic updates.' };
 
 export const demoApi: RivalShiftApi = {
   async minimizeWindow() {},
@@ -67,7 +67,7 @@ export const demoApi: RivalShiftApi = {
   async removeProfile(steamId64) { delete profiles[steamId64]; },
   async getHiddenAccounts() { return [...hiddenAccounts]; },
   async hideAccount(steamId64) { hiddenAccounts = [...new Set([...hiddenAccounts, steamId64])]; return [...hiddenAccounts]; },
-  async restoreHiddenAccounts() { hiddenAccounts = []; return []; },
+  async restoreHiddenAccounts(steamId64s) { const restore = new Set(steamId64s); hiddenAccounts = hiddenAccounts.filter((id) => !restore.has(id)); return [...hiddenAccounts]; },
   async switchAccount(steamId64) { await new Promise((resolve) => setTimeout(resolve, 1100)); accounts.forEach((account) => { account.currentSession = account.steamId64 === steamId64; }); return { ok: true, accountName: accounts.find((account) => account.steamId64 === steamId64)?.accountName ?? '' }; },
   async openPlayerProfile(uid) { window.open(`https://rivalsdata.com/player/${encodeURIComponent(uid)}`, '_blank'); },
   async openDiscordInvite() { window.open('https://discord.gg/dae6UVsgJM', '_blank', 'noopener,noreferrer'); },
@@ -103,7 +103,7 @@ export const demoApi: RivalShiftApi = {
     await new Promise((resolve) => setTimeout(resolve, forceRefresh ? 900 : 450));
     if (target.inGameName === 'Ghostline') return { status: 'offline', checkedAt: new Date().toISOString(), playerName: target.inGameName, teams: [], refreshCycles: forceRefresh ? 1 : 0 };
     const result: LiveMatchSnapshot = { status: 'in-game', checkedAt: new Date().toISOString(), playerName: target.inGameName, mode: 'Competitive', elapsed: '10:08', refreshCycles: forceRefresh ? 1 : 0, teams: [
-      { name: 'Team 1', averageRankScore: 5125, projectedChange: -14, players: [{ uid: '1', name: 'NOVA', rank: 'Celestial 1', rankScore: 95, wins: 38, losses: 36, winRate: 51, inParty: true, heroes: [{ name: 'Psylocke' }, { name: 'Magik' }], detailSeason: 'Season 9.5', heroStats: [{ name: 'Psylocke', matches: 12, winRate: 67 }, { name: 'Magik', matches: 7, winRate: 57 }, { name: 'Hela', matches: 4, winRate: 50 }], proficiency: [{ name: 'Psylocke', level: 48 }, { name: 'Magik', level: 43 }, { name: 'Hela', level: 41 }], recentResults: [{ name: 'Psylocke', result: 'win', rankChange: 24 }, { name: 'Magik', result: 'loss', rankChange: -18 }, { name: 'Hela', result: 'win', rankChange: 21 }, { name: 'Psylocke', result: 'win', rankChange: 23 }] }, { uid: '2', name: 'MACE', rank: 'One Above All', rankScore: 177, wins: 33, losses: 23, winRate: 59, heroes: [{ name: 'Hela' }] }] },
+      { name: 'Team 1', averageRankScore: 5125, projectedChange: -14, players: [{ uid: target.uid, name: 'NOVA', rank: 'Celestial 1', rankScore: 95, wins: 38, losses: 36, winRate: 51, inParty: true, heroes: [{ name: 'Psylocke' }, { name: 'Magik' }], detailSeason: 'Season 9.5', heroStats: [{ name: 'Psylocke', matches: 12, winRate: 67 }, { name: 'Magik', matches: 7, winRate: 57 }, { name: 'Hela', matches: 4, winRate: 50 }], proficiency: [{ name: 'Psylocke', level: 48 }, { name: 'Magik', level: 43 }, { name: 'Hela', level: 41 }], recentResults: [{ name: 'Psylocke', result: 'win', rankChange: 24 }, { name: 'Magik', result: 'loss', rankChange: -18 }, { name: 'Hela', result: 'win', rankChange: 21 }, { name: 'Psylocke', result: 'win', rankChange: 23 }] }, { uid: '2', name: 'MACE', rank: 'One Above All', rankScore: 177, wins: 33, losses: 23, winRate: 59, heroes: [{ name: 'Hela' }] }] },
       { name: 'Team 2', averageRankScore: 5139, projectedChange: 14, players: [{ uid: '3', name: 'Daes', rank: 'One Above All', rankScore: 175, wins: 5, losses: 3, winRate: 63, heroes: [{ name: 'Magneto' }] }, { uid: '4', name: 'Konuya', rank: 'Eternity', rankScore: 88, wins: 0, losses: 1, winRate: 0, heroes: [{ name: 'Luna Snow' }] }] },
     ] };
     Object.assign(result.teams[0].players[0], { peakRank: 'Eternity', peakRankScore: 106 });

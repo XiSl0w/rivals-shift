@@ -9,7 +9,7 @@ The Steam account discovery and switching flow in this project is adapted from:
 - Source: https://github.com/TCNOco/TcNo-Acc-Switcher
 - License: GNU General Public License v3.0
 
-Relevant upstream behavior includes reading and updating `loginusers.vdf`, selecting the active account with `MostRecent`/`AutoLogin`/`RememberPassword`, updating the Valve Steam registry keys on Windows, closing Steam processes, and restarting Steam. Rival Shift's implementation is a TypeScript/Electron adaptation with atomic file writes, rollback, and a Marvel Rivals-specific launch path.
+Relevant upstream behavior includes reading and updating `loginusers.vdf`, selecting the active account with `MostRecent`/`AutoLogin`/`RememberPassword`, disabling Steam's startup user chooser, updating the Valve Steam registry keys on Windows, closing Steam processes, and restarting Steam. Rival Shift's implementation is a TypeScript/Electron adaptation with atomic file writes, rollback, preserved remembered-login flags, and a Marvel Rivals-specific launch path.
 
 The full GPL v3 license is available at https://www.gnu.org/licenses/gpl-3.0.txt and in the upstream repository.
 

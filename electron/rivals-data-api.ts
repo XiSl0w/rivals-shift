@@ -11,17 +11,17 @@ type RivalsDataTransport = (request: {
 }) => Promise<{ status: number; data: unknown; headers?: Readonly<Record<string, string>> }>;
 type RivalsDataClientLike = {
   searchPlayers(name: string): Promise<unknown>;
-  getPlayer(uid: string, options?: { preferCache?: boolean }): Promise<unknown>;
-  refreshPlayer(uid: string): Promise<unknown>;
-  getPlayerHeroes(uid: string): Promise<unknown>;
-  getPlayerProficiency(uid: string): Promise<unknown>;
-  getPlayerSkins(uid: string): Promise<unknown>;
-  getPlayerMatches(uid: string, options?: { fresh?: boolean }): Promise<unknown>;
-  getPlayerPunishments(uid: string): Promise<unknown>;
-  getPlayerNameHistory(uid: string): Promise<unknown>;
-  getPlayerTeammates(uid: string): Promise<unknown>;
-  getPlayerCrosshairs(uid: string): Promise<unknown>;
-  getLiveMatch(uid: string): Promise<unknown>;
+  getPlayer(uid: string, options?: { preferCache?: boolean; signal?: AbortSignal }): Promise<unknown>;
+  refreshPlayer(uid: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  getPlayerHeroes(uid: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  getPlayerProficiency(uid: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  getPlayerSkins(uid: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  getPlayerMatches(uid: string, options?: { fresh?: boolean; signal?: AbortSignal }): Promise<unknown>;
+  getPlayerPunishments(uid: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  getPlayerNameHistory(uid: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  getPlayerTeammates(uid: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  getPlayerCrosshairs(uid: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  getLiveMatch(uid: string, options?: { signal?: AbortSignal }): Promise<unknown>;
   clearCache(): void;
 };
 
@@ -287,16 +287,18 @@ function normalizeLivePlayer(entryKey: string, payload: unknown, profilePayload?
 export function normalizeLiveMatchResponse(profile: RivalProfile, profilePayload: unknown, livePayload: unknown, playerProfiles: Record<string, unknown> = {}): LiveMatchSnapshot {
   const status = object(object(profilePayload).status);
   const state = number(status.state);
-  if (![6, 10, 12, 13, 14].includes(state ?? -1)) {
-    return { status: 'offline', checkedAt: new Date().toISOString(), playerName: profile.inGameName || profile.uid, teams: [] };
-  }
-
   const live = object(livePayload);
   const normalized = Object.entries(object(live.players)).map(([key, value]) => {
     const info = object(value);
     const uid = text(Object.hasOwn(info, 'uid') ? info.uid : key);
     return normalizeLivePlayer(key, value, playerProfiles[uid]);
   }).filter((value): value is LivePlayerWithSide => Boolean(value));
+  // The live endpoint is authoritative. A cached player profile can lag behind
+  // the lobby by several minutes, so never discard a populated live response
+  // just because its cached status still says offline.
+  if (![6, 10, 12, 13, 14].includes(state ?? -1) && normalized.length === 0) {
+    return { status: 'offline', checkedAt: new Date().toISOString(), playerName: profile.inGameName || profile.uid, teams: [] };
+  }
   const partyCounts = new Map<string, number>();
   for (const item of normalized) if (item.partyId) partyCounts.set(item.partyId, (partyCounts.get(item.partyId) ?? 0) + 1);
   for (const item of normalized) item.player.inParty = Boolean(item.partyId && (partyCounts.get(item.partyId) ?? 0) >= 2);
@@ -322,8 +324,8 @@ export function normalizeLiveMatchResponse(profile: RivalProfile, profilePayload
     status: 'in-game',
     checkedAt: new Date().toISOString(),
     playerName: profile.inGameName || text(object(profilePayload).name) || profile.uid,
-    mode: liveModeName(status.game_play_mode_id),
-    elapsed: elapsedTime(status.start_time),
+    mode: text(live.mode ?? live.game_mode) || liveModeName(status.game_play_mode_id ?? live.game_play_mode_id ?? live.mode_id),
+    elapsed: text(live.elapsed) || elapsedTime(status.start_time ?? live.start_time),
     teams,
   };
 }
@@ -600,16 +602,30 @@ function isCloudflareChallenge(status: number, headers: Headers, data: unknown):
   return /(?:Just a moment|cdn-cgi\/challenge-platform|cf_chl_opt|turnstile(?: verification)? required)/i.test(challengeText);
 }
 
+export function isDestroyedBrowserError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /object has been destroyed|object destroyed|(?:render )?frame was disposed|webcontents (?:was |is )?destroyed|browser window (?:was |is )?destroyed|session (?:was |is )?destroyed/i.test(message);
+}
+
+function settleWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
 export function createElectronTransport(
   chromiumSession: Pick<Session, 'fetch'>,
   challengeTransport?: RivalsDataTransport,
+  preferChallengeTransport = false,
 ): RivalsDataTransport {
   let useChallengeTransport = false;
-  const runChallengeTransport = async (request: Parameters<RivalsDataTransport>[0]) => {
+  let activeChallenge: Promise<Awaited<ReturnType<RivalsDataTransport>>> | null = null;
+  const startChallenge = async (request: Parameters<RivalsDataTransport>[0]) => {
     try {
-      const response = await challengeTransport!(request);
-      if (response.status >= 200 && response.status < 400) useChallengeTransport = false;
-      return response;
+      return await challengeTransport!(request);
     } catch (error) {
       if (request.signal.aborted) throw request.signal.reason;
       return {
@@ -618,7 +634,24 @@ export function createElectronTransport(
       };
     }
   };
-  return async (request) => {
+  const runChallengeTransport = async (request: Parameters<RivalsDataTransport>[0]) => {
+    if (activeChallenge) {
+      const verification = await settleWithSignal(activeChallenge, request.signal);
+      if (verification.status < 200 || verification.status >= 400) return verification;
+      useChallengeTransport = preferChallengeTransport;
+      return preferChallengeTransport ? startChallenge(request) : send(request);
+    }
+    const challenge = startChallenge(request);
+    activeChallenge = challenge;
+    try {
+      const response = await settleWithSignal(challenge, request.signal);
+      if (response.status >= 200 && response.status < 400) useChallengeTransport = preferChallengeTransport;
+      return response;
+    } finally {
+      if (activeChallenge === challenge) activeChallenge = null;
+    }
+  };
+  const send: RivalsDataTransport = async (request) => {
     if (useChallengeTransport && challengeTransport) return runChallengeTransport(request);
     const response = await chromiumSession.fetch(request.url, {
       method: request.method,
@@ -640,15 +673,41 @@ export function createElectronTransport(
     }
     return { status: response.status, data, headers: Object.fromEntries(response.headers.entries()) };
   };
+  return send;
 }
 
 class RivalsDataBrowserTransport {
   private window: BrowserWindow | null = null;
-  private ready: Promise<BrowserWindow> | null = null;
+  private ready: Promise<{ key: string; response: Awaited<ReturnType<RivalsDataTransport>> }> | null = null;
+  private requestQueue: Promise<void> = Promise.resolve();
+  private retryAfter = 0;
+  private retryMessage = '';
 
   constructor(private readonly chromiumSession: Session) {}
 
-  private async createWindow(): Promise<BrowserWindow> {
+  private resetBrowserWindow(window = this.window): void {
+    if (window && this.window === window) this.window = null;
+    this.retryAfter = 0;
+    this.retryMessage = '';
+    if (window && !window.isDestroyed()) {
+      try { window.destroy(); } catch { /* It may be disposed between the check and destroy call. */ }
+    }
+  }
+
+  private verificationUrl(request: Parameters<RivalsDataTransport>[0]): string {
+    const bodyUid = text(request.body?.uid);
+    if (/^\d+$/.test(bodyUid)) return `https://rivalsdata.com/player/${bodyUid}`;
+    try {
+      const requested = new URL(request.url);
+      const pathUid = requested.pathname.match(/\/(?:player|players)\/(\d+)/)?.[1];
+      const queryUid = requested.searchParams.get('uid') ?? '';
+      const uid = pathUid || queryUid;
+      if (/^\d+$/.test(uid)) return `https://rivalsdata.com/player/${uid}`;
+    } catch { /* The transport validates the actual request URL separately. */ }
+    return 'https://rivalsdata.com/';
+  }
+
+  private async createWindow(request: Parameters<RivalsDataTransport>[0]): Promise<Awaited<ReturnType<RivalsDataTransport>>> {
     const browser = new BrowserWindow({
       show: false,
       width: 560,
@@ -676,75 +735,201 @@ class RivalsDataBrowserTransport {
     });
     browser.on('closed', () => {
       if (this.window === browser) this.window = null;
-      this.ready = null;
     });
+    const closeOnAbort = () => {
+      try {
+        if (browser.isDestroyed()) return;
+        if (!browser.webContents.isDestroyed()) browser.webContents.stop();
+        browser.destroy();
+      } catch { /* Electron may dispose the native object during this callback. */ }
+    };
+    request.signal.addEventListener('abort', closeOnAbort, { once: true });
     this.window = browser;
-    await browser.loadURL('https://rivalsdata.com/').catch(() => undefined);
+    let capturedResponse: Awaited<ReturnType<RivalsDataTransport>> | null = null;
+    let debuggerAttached = false;
+    const matchingRequests = new Map<string, { status: number; headers: Readonly<Record<string, string>> }>();
+    const targetUrl = new URL(request.url);
+    const requestedUid = text(request.body?.uid);
+    const debuggerClient = browser.webContents.debugger;
+    const onDebuggerMessage = async (_event: Electron.Event, method: string, params: Record<string, any>) => {
+      try {
+        if (method === 'Network.requestWillBeSent') {
+          const networkRequest = params.request as { url?: string; method?: string; postData?: string } | undefined;
+          if (!networkRequest?.url || networkRequest.method !== request.method) return;
+          const networkUrl = new URL(networkRequest.url);
+          const sameEndpoint = networkUrl.origin === targetUrl.origin && networkUrl.pathname === targetUrl.pathname;
+          const samePlayer = !requestedUid || !networkRequest.postData || networkRequest.postData.includes(requestedUid);
+          if (sameEndpoint && samePlayer) matchingRequests.set(String(params.requestId), { status: 0, headers: {} });
+          return;
+        }
+        if (method === 'Network.responseReceived') {
+          const requestId = String(params.requestId);
+          if (!matchingRequests.has(requestId)) return;
+          const response = params.response as { status?: number; headers?: Record<string, string> } | undefined;
+          matchingRequests.set(requestId, {
+            status: Number(response?.status ?? 0),
+            headers: response?.headers ?? {},
+          });
+          return;
+        }
+        if (method !== 'Network.loadingFinished') return;
+        const requestId = String(params.requestId);
+        const metadata = matchingRequests.get(requestId);
+        if (!metadata?.status) return;
+        matchingRequests.delete(requestId);
+        const result = await debuggerClient.sendCommand('Network.getResponseBody', { requestId }) as { body?: string; base64Encoded?: boolean };
+        const body = result.base64Encoded
+          ? Buffer.from(result.body ?? '', 'base64').toString('utf8')
+          : result.body ?? '';
+        const contentType = Object.entries(metadata.headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1] ?? '';
+        let data: unknown = body;
+        if (String(contentType).includes('application/json')) {
+          try { data = JSON.parse(body); } catch { data = null; }
+        }
+        const candidate = { status: metadata.status, data, headers: metadata.headers };
+        if (!isCloudflareChallenge(candidate.status, new Headers(candidate.headers), candidate.data)) capturedResponse = candidate;
+      } catch { /* A navigation can finish after the debugger has detached. */ }
+    };
+    try {
+      debuggerClient.attach('1.3');
+      debuggerAttached = true;
+      debuggerClient.on('message', onDebuggerMessage);
+      await debuggerClient.sendCommand('Network.enable');
+    } catch { debuggerAttached = false; }
+    await settleWithSignal(browser.loadURL(this.verificationUrl(request)), request.signal).catch((error) => {
+      if (request.signal.aborted) throw error;
+    });
 
     let verificationShown = false;
-    let verificationTriggered = false;
+    let verificationWasShown = false;
+    let visibleChallengeChecks = 0;
+    let challengeFocused = false;
+    let keepBackgroundWindow = false;
     const showVerificationAt = Date.now() + 750;
     const deadline = Date.now() + 120_000;
-    while (!browser.isDestroyed() && Date.now() < deadline) {
-      let title = '';
-      let pageText = '';
-      let apiProbe: { status: number; body: string } | null = null;
-      try {
-        if (!verificationTriggered) {
-          verificationTriggered = Boolean(await browser.webContents.executeJavaScript(`(() => {
-            const playerLink = document.querySelector('a[href^="/player/"]');
-            if (!playerLink) return false;
-            playerLink.click();
-            return true;
+    try {
+      while (!browser.isDestroyed() && Date.now() < deadline) {
+        let title = '';
+        let apiProbe: Awaited<ReturnType<RivalsDataTransport>> | null = null;
+        try {
+          const challengeVisible = Boolean(await browser.webContents.executeJavaScript(`(() => {
+            const isVisible = (element, minimumWidth = 1, minimumHeight = 1) => {
+              if (!element) return false;
+              const rect = element.getBoundingClientRect();
+              const style = getComputedStyle(element);
+              if (rect.width < minimumWidth || rect.height < minimumHeight) return false;
+              if (rect.bottom <= 0 || rect.right <= 0 || rect.top >= innerHeight || rect.left >= innerWidth) return false;
+              if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || 1) < 0.05) return false;
+              return typeof element.checkVisibility !== 'function'
+                || element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+            };
+            const frames = [...document.querySelectorAll('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]')];
+            const dialog = [...document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="dialog"]')]
+              .find((element) => {
+                return isVisible(element, 180, 60)
+                  && /verifying you(?:'|’)re human|verify you are human|security verification|turnstile/i.test(element.textContent || '');
+              });
+            const visibleFrame = frames.find((frame) => isVisible(frame, 180, 40));
+            const target = dialog || visibleFrame;
+            if (target) {
+              target.scrollIntoView({ block: 'center', inline: 'center' });
+              return true;
+            }
+            return false;
           })()`, true));
+          title = browser.webContents.getTitle();
+          visibleChallengeChecks = challengeVisible ? visibleChallengeChecks + 1 : 0;
+          if (challengeVisible && !challengeFocused) {
+            challengeFocused = true;
+            browser.setSize(500, 440);
+            browser.center();
+          }
+        } catch {
+          if (browser.isDestroyed()) break;
+          // Cloudflare navigates between challenge stages. DOM execution can be
+          // rejected briefly while the document is replaced; keep polling.
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          continue;
         }
-        title = browser.webContents.getTitle();
-        pageText = await browser.webContents.executeJavaScript('document.body?.innerText || ""', true);
-        apiProbe = await browser.webContents.executeJavaScript(`fetch('https://api.rivalsdata.com/leaderboards?limit=1&os=1', {
-          headers: { Accept: 'application/json' },
-          credentials: 'include'
-        }).then(async (response) => ({ status: response.status, body: await response.text() })).catch(() => null)`, true);
-      } catch {
-        if (browser.isDestroyed()) break;
-        // Cloudflare navigates between challenge stages. DOM execution can be
-        // rejected briefly while the document is replaced; keep polling.
-        await new Promise((resolve) => setTimeout(resolve, 250));
-        continue;
+        if (request.signal.aborted) throw request.signal.reason;
+        try {
+          apiProbe = capturedResponse ?? await this.executeInPage(browser, request);
+        } catch {
+          if (request.signal.aborted) throw request.signal.reason;
+        }
+        const pageChallengeVisible = /(?:just a moment|performing security verification|verifying you're human)/i.test(title)
+          || /\/cdn-cgi\/challenge-platform/i.test(browser.webContents.getURL());
+        if (apiProbe
+          && apiProbe.status >= 200
+          && apiProbe.status < 400
+          && !isCloudflareChallenge(apiProbe.status, new Headers(apiProbe.headers), apiProbe.data)) {
+          keepBackgroundWindow = true;
+          browser.setSkipTaskbar(true);
+          browser.hide();
+          return apiProbe;
+        }
+        const confirmedChallenge = pageChallengeVisible || visibleChallengeChecks >= 2;
+        if (!verificationShown && confirmedChallenge && Date.now() >= showVerificationAt) {
+          verificationShown = true;
+          verificationWasShown = true;
+          browser.setSkipTaskbar(false);
+          browser.center();
+          browser.setAlwaysOnTop(true, 'floating');
+          browser.show();
+          browser.focus();
+          setTimeout(() => {
+            if (!browser.isDestroyed()) browser.setAlwaysOnTop(false);
+          }, 1_500);
+        }
+        if (verificationShown && !confirmedChallenge) {
+          // The challenge has cleared. Remove the verification window
+          // immediately while the original API request is retried in the same
+          // authenticated browser session.
+          verificationShown = false;
+          browser.setAlwaysOnTop(false);
+          browser.setSkipTaskbar(true);
+          browser.hide();
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
       }
-      const pageChallengeVisible = /(?:just a moment|performing security verification|verifying you're human|enable javascript and cookies to continue)/i.test(`${title}\n${pageText}`);
-      const apiReady = apiProbe != null
-        && apiProbe.status >= 200
-        && apiProbe.status < 300
-        && !/(?:just a moment|turnstile(?: verification)? required|cdn-cgi\/challenge-platform)/i.test(apiProbe.body);
-      if (apiReady) {
-        if (browser.isVisible()) browser.hide();
-        return browser;
+      throw new Error(verificationWasShown
+        ? 'Rivals Data verification was closed or timed out. Finish both Cloudflare verification steps, or use the browser extension connection.'
+        : 'Rivals Data browser verification could not open. Try the browser extension connection instead.');
+    } finally {
+      request.signal.removeEventListener('abort', closeOnAbort);
+      if (debuggerAttached) {
+        debuggerClient.removeListener('message', onDebuggerMessage);
+        try { debuggerClient.detach(); } catch { /* The window may already be gone. */ }
       }
-      if (!verificationShown && (pageChallengeVisible || verificationTriggered) && Date.now() >= showVerificationAt) {
-        verificationShown = true;
-        browser.setSkipTaskbar(false);
-        browser.center();
-        browser.setAlwaysOnTop(true, 'floating');
-        browser.show();
-        browser.focus();
-        setTimeout(() => {
-          if (!browser.isDestroyed()) browser.setAlwaysOnTop(false);
-        }, 1_500);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (!keepBackgroundWindow && !browser.isDestroyed()) browser.destroy();
     }
-    if (!browser.isDestroyed()) browser.destroy();
-    throw new Error(verificationShown
-      ? 'Rivals Data verification was closed or timed out. Finish both Cloudflare verification steps, or use the browser extension connection.'
-      : 'Rivals Data browser verification could not open. Try the browser extension connection instead.');
   }
 
-  private ensureWindow(): Promise<BrowserWindow> {
-    if (this.window && !this.window.isDestroyed() && this.ready) return this.ready;
-    this.ready = this.createWindow().catch((error) => {
-      this.ready = null;
-      throw error;
-    });
+  private requestKey(request: Parameters<RivalsDataTransport>[0]): string {
+    return `${request.method} ${request.url} ${JSON.stringify(request.body ?? {})}`;
+  }
+
+  private ensureWindow(request: Parameters<RivalsDataTransport>[0]): Promise<{ key: string; response: Awaited<ReturnType<RivalsDataTransport>> }> {
+    if (this.ready) return this.ready;
+    if (Date.now() < this.retryAfter) {
+      return Promise.resolve({ key: this.requestKey(request), response: { status: 503, data: { error: this.retryMessage } } });
+    }
+    const key = this.requestKey(request);
+    const ready = this.createWindow(request)
+      .then((response) => {
+        this.retryAfter = 0;
+        this.retryMessage = '';
+        return { key, response };
+      })
+      .catch((error) => {
+        this.retryAfter = Date.now() + 60_000;
+        this.retryMessage = error instanceof Error ? error.message : 'Rivals Data verification failed.';
+        throw error;
+      })
+      .finally(() => {
+        if (this.ready === ready) this.ready = null;
+      });
+    this.ready = ready;
     return this.ready;
   }
 
@@ -763,65 +948,105 @@ class RivalsDataBrowserTransport {
     return { status: response.status, data, headers: Object.fromEntries(response.headers.entries()) };
   }
 
-  async request(request: Parameters<RivalsDataTransport>[0]): Promise<Awaited<ReturnType<RivalsDataTransport>>> {
-    if (request.signal.aborted) throw request.signal.reason;
-    let browser = await this.ensureWindow();
-    if (request.signal.aborted) throw request.signal.reason;
-    let response = await this.execute(request);
-    if (isCloudflareChallenge(response.status, new Headers(response.headers), response.data)) {
-      browser.destroy();
-      browser = await this.ensureWindow();
-      if (request.signal.aborted) throw request.signal.reason;
-      response = await this.execute(request);
-      if (isCloudflareChallenge(response.status, new Headers(response.headers), response.data)) {
-        return {
-          status: 503,
-          data: { error: 'Rivals Data verification completed, but the API still requires Turnstile. Open the verification again; if it continues, use the browser extension connection.' },
-        };
+  private async executeInPage(browser: BrowserWindow, request: Parameters<RivalsDataTransport>[0]): Promise<Awaited<ReturnType<RivalsDataTransport>>> {
+    const input = JSON.stringify({
+      url: request.url,
+      method: request.method,
+      headers: request.headers,
+      body: request.method === 'POST' ? JSON.stringify(request.body ?? {}) : undefined,
+    });
+    return browser.webContents.executeJavaScript(`(async () => {
+      const input = ${input};
+      const response = await fetch(input.url, {
+        method: input.method,
+        headers: input.headers,
+        ...(input.body ? { body: input.body } : {}),
+        credentials: 'include'
+      });
+      const contentType = response.headers.get('content-type') || '';
+      const body = await response.text();
+      let data = body;
+      if (contentType.includes('application/json')) {
+        try { data = JSON.parse(body); } catch { data = null; }
       }
+      return { status: response.status, data, headers: Object.fromEntries(response.headers.entries()) };
+    })()`, true);
+  }
+
+  private async performRequest(request: Parameters<RivalsDataTransport>[0]): Promise<Awaited<ReturnType<RivalsDataTransport>>> {
+    if (request.signal.aborted) throw request.signal.reason;
+    if (this.window && !this.window.isDestroyed() && !this.ready) {
+      const backgroundWindow = this.window;
+      let backgroundResponse: Awaited<ReturnType<RivalsDataTransport>> | null = null;
+      try {
+        backgroundResponse = await settleWithSignal(this.executeInPage(backgroundWindow, request), request.signal);
+      } catch (error) {
+        if (request.signal.aborted) {
+          this.resetBrowserWindow(backgroundWindow);
+          throw error;
+        }
+        if (!isDestroyedBrowserError(error)) throw error;
+        // A hidden verification window can be closed by Electron while a queued
+        // request is entering its renderer. Discard it and transparently create
+        // a fresh browser session instead of leaking "Object has been destroyed".
+        this.resetBrowserWindow(backgroundWindow);
+      }
+      if (backgroundResponse && !isCloudflareChallenge(backgroundResponse.status, new Headers(backgroundResponse.headers), backgroundResponse.data)) {
+        return backgroundResponse;
+      }
+      if (backgroundResponse) this.resetBrowserWindow(backgroundWindow);
+    }
+    const verification = await this.ensureWindow(request);
+    if (request.signal.aborted) throw request.signal.reason;
+    if (verification.response.status < 200 || verification.response.status >= 400) return verification.response;
+    const response = verification.key === this.requestKey(request)
+      ? verification.response
+      : await this.execute(request);
+    if (isCloudflareChallenge(response.status, new Headers(response.headers), response.data)) {
+      return {
+        status: 503,
+        data: { error: 'Rivals Data verification completed, but the API still requires Turnstile. Open the verification again; if it continues, use the browser extension connection.' },
+      };
     }
     return response;
+  }
+
+  async request(request: Parameters<RivalsDataTransport>[0]): Promise<Awaited<ReturnType<RivalsDataTransport>>> {
+    const execute = async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          return await this.performRequest(request);
+        } catch (error) {
+          if (request.signal.aborted || !isDestroyedBrowserError(error)) throw error;
+          this.resetBrowserWindow();
+          if (attempt === 2) {
+            return {
+              status: 503,
+              data: { error: 'The Rivals Data browser session restarted before the API request completed. Cached stats were kept; try again.' },
+            };
+          }
+        }
+      }
+      throw new Error('Rivals Data browser recovery ended unexpectedly.');
+    };
+    const run = this.requestQueue.then(execute, execute);
+    this.requestQueue = run.then(() => undefined, () => undefined);
+    return settleWithSignal(run, request.signal);
   }
 }
 
 export function createChallengeAwareElectronTransport(chromiumSession: Session): RivalsDataTransport {
   const browserTransport = new RivalsDataBrowserTransport(chromiumSession);
-  return createElectronTransport(chromiumSession, (request) => browserTransport.request(request));
+  return createElectronTransport(chromiumSession, (request) => browserTransport.request(request), true);
 }
 
-export function normalizeRivalsDataResponses(
-  profile: RivalProfile,
-  profilePayload: unknown,
-  heroesPayload: unknown,
-  proficiencyPayload: unknown,
-  matchesPayload: unknown,
-  punishmentsPayload?: unknown,
-  nameHistoryPayload?: unknown,
-  teammatesPayload?: unknown,
-  crosshairsPayload?: unknown,
-  skinsPayload?: unknown,
-): RivalProfile {
+export function normalizeRivalsDataSummary(profile: RivalProfile, profilePayload: unknown): RivalProfile {
   const info = object(profilePayload);
   const rank = latestRank(info);
   const wins = number(rank.win_count);
   const matches = number(rank.battle_count);
   const losses = wins != null && matches != null ? Math.max(0, matches - wins) : undefined;
   const rankLevel = number(rank.level);
-  const heroStats = normalizeHeroes(heroesPayload);
-  const proficiency = normalizeProficiency(proficiencyPayload);
-  const matchHistory = normalizeMatches(matchesPayload);
-  const punishments = normalizePunishments(punishmentsPayload);
-  const nameHistory = normalizeNameHistory(nameHistoryPayload);
-  const teammates = normalizeTeammates(teammatesPayload);
-  const crosshairs = normalizeCrosshairs(crosshairsPayload);
-  const skins = normalizeSkins(skinsPayload);
-  const skinsRoot = object(skinsPayload);
-  const eventSkins = object(skinsRoot.event_skins);
-  const skinInventoryValue = number(skinsRoot.units_value) ?? skins.reduce((total, skin) => total + (skin.value ?? 0), 0);
-  const eventSkinsOwned = number(eventSkins.owned) ?? skins.filter((skin) => /event/i.test(`${skin.category ?? ''} ${skin.source ?? ''}`)).length;
-  const eventSkinsTotal = number(eventSkins.total);
-  const heroIcons = Object.fromEntries([...heroStats, ...proficiency]
-    .filter((hero) => hero.iconUrl).map((hero) => [hero.name, hero.iconUrl as string]));
   const currentRank = rankName(rankLevel);
   const currentRankScoreRaw = number(rank.rank_score);
   const currentRankScore = currentRankScoreRaw != null ? Math.round(currentRankScoreRaw) : undefined;
@@ -854,19 +1079,6 @@ export function normalizeRivalsDataResponses(
       wins,
       losses,
       matches,
-      heroes: heroStats.slice(0, 6).map((hero) => hero.name),
-      heroIcons,
-      heroStats,
-      proficiency,
-      matchHistory,
-      punishments,
-      nameHistory,
-      teammates,
-      crosshairs,
-      skins,
-      skinInventoryValue,
-      eventSkinsOwned,
-      eventSkinsTotal,
       factionName: text(faction.name) || undefined,
       matchHistoryVisible: number(info.match_history_is_visible) === 1,
       lastSeenAt: timestampIso(info.last_seen),
@@ -879,6 +1091,50 @@ export function normalizeRivalsDataResponses(
   };
 }
 
+export function normalizeRivalsDataResponses(
+  profile: RivalProfile,
+  profilePayload: unknown,
+  heroesPayload: unknown,
+  proficiencyPayload: unknown,
+  matchesPayload: unknown,
+  punishmentsPayload?: unknown,
+  nameHistoryPayload?: unknown,
+  teammatesPayload?: unknown,
+  crosshairsPayload?: unknown,
+  skinsPayload?: unknown,
+): RivalProfile {
+  const summary = normalizeRivalsDataSummary(profile, profilePayload);
+  const heroStats = heroesPayload === undefined ? undefined : normalizeHeroes(heroesPayload);
+  const proficiency = proficiencyPayload === undefined ? undefined : normalizeProficiency(proficiencyPayload);
+  const skins = skinsPayload === undefined ? undefined : normalizeSkins(skinsPayload);
+  const skinsRoot = skinsPayload === undefined ? undefined : object(skinsPayload);
+  const eventSkins = skinsRoot ? object(skinsRoot.event_skins) : undefined;
+  const iconHeroes = heroStats ?? summary.stats?.heroStats ?? [];
+  const iconProficiency = proficiency ?? summary.stats?.proficiency ?? [];
+  const stats: NonNullable<RivalProfile['stats']> = { ...summary.stats };
+  if (heroStats !== undefined) {
+    stats.heroes = heroStats.slice(0, 6).map((hero) => hero.name);
+    stats.heroStats = heroStats;
+  }
+  if (proficiency !== undefined) stats.proficiency = proficiency;
+  if (heroStats !== undefined || proficiency !== undefined) {
+    stats.heroIcons = Object.fromEntries([...iconHeroes, ...iconProficiency]
+      .filter((hero) => hero.iconUrl).map((hero) => [hero.name, hero.iconUrl as string]));
+  }
+  if (matchesPayload !== undefined) stats.matchHistory = normalizeMatches(matchesPayload);
+  if (punishmentsPayload !== undefined) stats.punishments = normalizePunishments(punishmentsPayload);
+  if (nameHistoryPayload !== undefined) stats.nameHistory = normalizeNameHistory(nameHistoryPayload);
+  if (teammatesPayload !== undefined) stats.teammates = normalizeTeammates(teammatesPayload);
+  if (crosshairsPayload !== undefined) stats.crosshairs = normalizeCrosshairs(crosshairsPayload);
+  if (skins !== undefined && skinsRoot && eventSkins) {
+    stats.skins = skins;
+    stats.skinInventoryValue = number(skinsRoot.units_value) ?? skins.reduce((total, skin) => total + (skin.value ?? 0), 0);
+    stats.eventSkinsOwned = number(eventSkins.owned) ?? skins.filter((skin) => /event/i.test(`${skin.category ?? ''} ${skin.source ?? ''}`)).length;
+    stats.eventSkinsTotal = number(eventSkins.total);
+  }
+  return { ...summary, stats };
+}
+
 export class RivalsDataApi {
   private readonly client: Promise<RivalsDataClientLike>;
   private readonly transport: RivalsDataTransport;
@@ -887,30 +1143,50 @@ export class RivalsDataApi {
     this.transport = createChallengeAwareElectronTransport(chromiumSession);
     this.client = import('rivalsdata-player-sdk').then(({ RivalsDataClient: Client }) => new Client({
       transport: this.transport,
-      timeoutMs: 30_000,
+      // The protected browser fallback can require a user-visible verification
+      // on its first request. Keep the SDK deadline inside the IPC deadline.
+      timeoutMs: 100_000,
       cacheTtlMs: 30_000,
       allowFreshMatches: true,
     }));
   }
 
-  async refresh(profile: RivalProfile): Promise<RivalProfile> {
+  async refreshSummary(profile: RivalProfile, signal?: AbortSignal): Promise<RivalProfile> {
     const uid = profile.uid.trim();
     if (!/^\d+$/.test(uid)) throw new Error('Add a valid Marvel Rivals UID before using the SDK API.');
     const client = await this.client;
     client.clearCache();
-    const optional = async (request: Promise<unknown>, fallback: unknown) => request.catch(() => fallback);
+    // A refresh must either return newly requested data or fail. Falling back to
+    // prefer_cache here made an old rank look current because the normalizer
+    // assigns a new syncedAt timestamp to every successful response.
+    const player = await client.refreshPlayer(uid, { signal });
+    return normalizeRivalsDataSummary(profile, player);
+  }
+
+  async refresh(profile: RivalProfile, signal?: AbortSignal): Promise<RivalProfile> {
+    const uid = profile.uid.trim();
+    if (!/^\d+$/.test(uid)) throw new Error('Add a valid Marvel Rivals UID before using the SDK API.');
+    const client = await this.client;
+    client.clearCache();
     // Rivals Data's website refreshes upstream with POST /player { uid } first.
-    // Only use prefer_cache when that fresh request is unavailable.
-    const player = await client.refreshPlayer(uid).catch(() => client.getPlayer(uid, { preferCache: true }));
+    // Do not silently substitute a cached profile: callers preserve the local
+    // snapshot and can retry without falsely advancing its sync timestamp.
+    const player = await client.refreshPlayer(uid, { signal });
+    // Rank and identity are the important fresh result. Secondary endpoints are
+    // best-effort and share a shorter budget, so a slow skins or match-history
+    // request cannot discard a successfully refreshed rank.
+    const detailTimeout = AbortSignal.timeout(25_000);
+    const detailSignal = signal ? AbortSignal.any([signal, detailTimeout]) : detailTimeout;
+    const optional = async (request: Promise<unknown>) => request.catch(() => undefined);
     const [heroes, proficiency, matches, punishments, nameHistory, teammates, crosshairs, skins] = await Promise.all([
-      client.getPlayerHeroes(uid),
-      client.getPlayerProficiency(uid),
-      client.getPlayerMatches(uid, { fresh: true }).catch(() => client.getPlayerMatches(uid)),
-      optional(client.getPlayerPunishments(uid), {}),
-      optional(client.getPlayerNameHistory(uid), []),
-      optional(client.getPlayerTeammates(uid), []),
-      optional(client.getPlayerCrosshairs(uid), []),
-      client.getPlayerSkins(uid),
+      optional(client.getPlayerHeroes(uid, { signal: detailSignal })),
+      optional(client.getPlayerProficiency(uid, { signal: detailSignal })),
+      optional(client.getPlayerMatches(uid, { fresh: true, signal: detailSignal }).catch(() => client.getPlayerMatches(uid, { signal: detailSignal }))),
+      optional(client.getPlayerPunishments(uid, { signal: detailSignal })),
+      optional(client.getPlayerNameHistory(uid, { signal: detailSignal })),
+      optional(client.getPlayerTeammates(uid, { signal: detailSignal })),
+      optional(client.getPlayerCrosshairs(uid, { signal: detailSignal })),
+      optional(client.getPlayerSkins(uid, { signal: detailSignal })),
     ]);
     return normalizeRivalsDataResponses(profile, player, heroes, proficiency, matches, punishments, nameHistory, teammates, crosshairs, skins);
   }
@@ -920,32 +1196,35 @@ export class RivalsDataApi {
     if (!/^\d+$/.test(uid)) throw new Error('Add a valid Marvel Rivals UID before checking a live match.');
     const client = await this.client;
     if (forceRefresh) client.clearCache();
-    const player = forceRefresh
-      ? await client.refreshPlayer(uid).catch(() => client.getPlayer(uid, { preferCache: true }))
-      : await client.getPlayer(uid, { preferCache: true });
+    // The profile is useful for mode and elapsed-time labels, but /live is the
+    // source of truth for whether a lobby exists. Always query both so a stale
+    // cached status cannot turn a real match into an offline result.
+    const firstLive = client.getLiveMatch(uid).then(
+      (value) => ({ ok: true as const, value }),
+      (error) => ({ ok: false as const, error }),
+    );
+    const player = await client.getPlayer(uid, { preferCache: true });
     const status = object(object(player).status);
     const state = number(status.state);
-    if (![6, 10, 12, 13, 14].includes(state ?? -1)) return normalizeLiveMatchResponse(profile, player, {});
-
-    const deadline = Date.now() + 90_000;
+    const playerSaysInGame = [6, 10, 12, 13, 14].includes(state ?? -1);
+    const deadline = Date.now() + 25_000;
+    let firstAttempt = true;
     while (true) {
       try {
-        const live = await client.getLiveMatch(uid);
-        const livePlayers = object(object(live).players);
-        const publicUids = [...new Set(Object.entries(livePlayers).map(([key, value]) => {
-          const info = object(value);
-          const candidate = text(Object.hasOwn(info, 'uid') ? info.uid : key);
-          return /^\d+$/.test(candidate) ? candidate : '';
-        }).filter(Boolean))];
-        const profiles = Object.fromEntries(await Promise.all(publicUids.map(async (playerUid) => [
-          playerUid,
-          playerUid === uid ? player : await client.getPlayer(playerUid, { preferCache: true }).catch(() => undefined),
-        ] as const)));
-        return normalizeLiveMatchResponse(profile, player, live, profiles);
+        const firstResult = firstAttempt ? await firstLive : null;
+        firstAttempt = false;
+        if (firstResult && !firstResult.ok) throw firstResult.error;
+        const live = firstResult?.value ?? await client.getLiveMatch(uid);
+        // The live payload already carries current rank, record, parties, and
+        // top heroes. Returning it immediately avoids loading up to 11 extra
+        // profile pages before the board can render.
+        return normalizeLiveMatchResponse(profile, player, live, { [uid]: player });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (!/match still loading/i.test(message) || Date.now() + 10_000 >= deadline) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 10_000));
+        const stillLoading = /match still loading|live.?match details yet|live match is loading/i.test(message);
+        if (!playerSaysInGame && !stillLoading) return normalizeLiveMatchResponse(profile, player, {});
+        if (!stillLoading || Date.now() + 2_000 >= deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
       }
     }
   }
