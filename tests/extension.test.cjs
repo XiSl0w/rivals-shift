@@ -239,7 +239,7 @@ test('live-game dashboard exposes fast lobby facts and an immediate refresh cont
   assert.match(app, />DETAILS</);
   assert.match(app, /className="live-refresh-now"/);
   assert.match(app, /tracked=\{player\.uid === profile\?\.uid\}/);
-  assert.match(styles, /v0\.9\.50 stable Steam switching, current-session ordering, and API recovery/);
+  assert.match(styles, /v0\.9\.51 reliable Rivals Data verification and API deadlines/);
 });
 
 test('player search and the compact two-column connection selector are present', () => {

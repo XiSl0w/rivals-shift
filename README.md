@@ -31,7 +31,7 @@ Rival Shift is a Windows-first Electron account switcher focused on **Marvel Riv
 
 ## Installation and sharing
 
-Run `release/Rival Shift Setup 0.9.50.exe`. The borderless custom bootstrapper contains the desktop application and its browser-extension files; recipients do not need the source tree or `node_modules`.
+Run `release/Rival Shift Setup 0.9.51.exe`. The borderless custom bootstrapper contains the desktop application and its browser-extension files; recipients do not need the source tree or `node_modules`.
 
 For public distribution, share the setup executable together with the project license and third-party notices, publish a SHA-256 checksum, and use a trusted Windows code-signing certificate so SmartScreen can identify the publisher. Keep the source-code offer/repository available as required by GPL-3.0.
 

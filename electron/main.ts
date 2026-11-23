@@ -348,7 +348,9 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     // API mode may need to complete a visible Cloudflare verification before
     // the first request can run. The previous 25/60-second limits expired while
     // that verification was still in progress and made healthy requests fail.
-    const timeoutMs = scope === 'summary' ? 105_000 : 135_000;
+    // The API browser has up to 120 seconds to finish Cloudflare verification,
+    // and the SDK has 150 seconds. IPC must remain the outermost deadline.
+    const timeoutMs = scope === 'summary' ? 165_000 : 195_000;
     const refreshDeadline = AbortSignal.timeout(timeoutMs);
     try {
       const preferences = await store.preferences();

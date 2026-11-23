@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "102",
   "name": "Rival Shift - Player Data Bridge",
-  "version": "0.9.50",
+  "version": "0.9.51",
   "description": "Loads linked Rivals Data profiles and sends public Marvel Rivals stats to the local Rival Shift app.",
   "permissions": ["alarms", "tabs"],
   "host_permissions": [

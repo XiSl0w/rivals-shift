@@ -174,6 +174,24 @@ test('Electron transport sends leaderboard GET requests without a body', async (
   assert.deepEqual(response.data, { players: [] });
 });
 
+test('preferred browser transport falls back when a direct request hangs', async () => {
+  let directRequests = 0;
+  let browserRequests = 0;
+  const transport = createElectronTransport({
+    async fetch() {
+      directRequests += 1;
+      return new Promise(() => {});
+    },
+  }, async () => {
+    browserRequests += 1;
+    return { status: 200, data: { ok: true } };
+  }, true);
+  const response = await transport({ url: 'https://api.rivalsdata.com/player', method: 'POST', headers: {}, body: { uid: '1' }, signal: new AbortController().signal });
+  assert.deepEqual(response, { status: 200, data: { ok: true } });
+  assert.equal(directRequests, 1);
+  assert.equal(browserRequests, 1);
+});
+
 test('top sniper groups queued, in-game, and online top-1,000 players in priority order', () => {
   const result = normalizeTopSnipers({ players: [
     { position: 9, uid: 9, name: 'Grouped', icon: 31060001, rank_level: 23, rank_score: 5600, wins: 10, losses: 5, status: { state: 4, team_member_count: 2, max_member: 6 } },
@@ -320,14 +338,22 @@ test('Rivals Data browser fallback triggers the site verification dialog and wai
   const source = require('node:fs').readFileSync(require('node:path').resolve(__dirname, '..', 'electron', 'rivals-data-api.ts'), 'utf8');
   assert.match(source, /verificationUrl\(request/);
   assert.match(source, /rivalsdata\.com\/player\/\$\{bodyUid\}/);
+  assert.doesNotMatch(source, /return requested\.href/);
+  assert.doesNotMatch(source, /'api\.rivalsdata\.com'\]\.includes\(hostname\)/);
+  assert.match(source, /void browser\.loadURL\(this\.verificationUrl\(request\)\)\.catch/);
   assert.match(source, /iframe\[src\*="challenges\.cloudflare\.com"\]/);
   assert.match(source, /browser\.setSize\(500, 440\)/);
   assert.match(source, /Network\.getResponseBody/);
-  assert.match(source, /capturedResponse \?\? await this\.executeInPage/);
+  assert.match(source, /apiProbe = capturedResponse \?\? await Promise\.race/);
   assert.match(source, /visibleChallengeChecks >= 2/);
+  assert.match(source, /const showVerificationAt = Date\.now\(\) \+ 750/);
+  assert.match(source, /const showVerificationTimer = setTimeout\(showVerification, 750\)/);
+  assert.match(source, /clearTimeout\(showVerificationTimer\)/);
+  assert.match(source, /probeChallenge/);
+  assert.doesNotMatch(source, /if \(verificationShown && !confirmedChallenge\)/);
   assert.match(source, /element\.checkVisibility/);
   assert.match(source, /browser\.setSkipTaskbar\(true\);\s*browser\.hide\(\)/);
-  assert.match(source, /apiProbe = capturedResponse \?\? await this\.executeInPage\(browser, request\)/);
+  assert.match(source, /this\.executeInPage\(browser, request\),\s*new Promise<null>/);
   assert.match(source, /browser\.hide\(\)/);
   assert.match(source, /if \(request\.signal\.aborted\) \{\s*this\.resetBrowserWindow\(backgroundWindow\)/);
   assert.match(source, /private requestQueue: Promise<void> = Promise\.resolve\(\)/);
@@ -345,7 +371,7 @@ test('bulk account refresh serializes protected API work and deduplicates profil
   assert.match(source, /preferences\.rivalsDataMode === 'api' \? 1 : 2/);
   assert.match(source, /Math\.min\(concurrency, linked\.length\)/);
   assert.match(source, /profileRefreshes\.get\(steamId64\)/);
-  assert.match(source, /scope === 'summary' \? 105_000 : 135_000/);
+  assert.match(source, /scope === 'summary' \? 165_000 : 195_000/);
   assert.match(source, /settleWithSignal\(operation, refreshDeadline\)/);
   assert.match(source, /profile\.stats && \(scope === 'summary' \|\| disposedBrowserSession\)/);
   assert.match(source, /refreshNotice: 'cached'/);
@@ -381,7 +407,7 @@ test('profile refresh shares one deadline across every SDK request', () => {
   assert.match(source, /async refresh\(profile: RivalProfile, signal\?: AbortSignal\)/);
   assert.match(source, /refreshPlayer\(uid, \{ signal \}\)/);
   assert.match(source, /getPlayerSkins\(uid, \{ signal: detailSignal \}\)/);
-  assert.match(source, /timeoutMs: 100_000/);
+  assert.match(source, /timeoutMs: 150_000/);
   assert.match(source, /AbortSignal\.timeout\(25_000\)/);
   const refreshSource = source.slice(source.indexOf('async refreshSummary'), source.indexOf('async liveMatch'));
   assert.doesNotMatch(refreshSource, /refreshPlayer\(uid, \{ signal \}\)\.catch/);

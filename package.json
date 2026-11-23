@@ -1,6 +1,6 @@
 {
   "name": "rival-shift",
-  "version": "0.9.50",
+  "version": "0.9.51",
   "packageManager": "pnpm@11.25.0",
   "private": true,
   "author": "Rival Shift contributors",

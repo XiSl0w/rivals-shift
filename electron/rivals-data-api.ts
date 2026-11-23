@@ -653,25 +653,57 @@ export function createElectronTransport(
   };
   const send: RivalsDataTransport = async (request) => {
     if (useChallengeTransport && challengeTransport) return runChallengeTransport(request);
-    const response = await chromiumSession.fetch(request.url, {
-      method: request.method,
-      headers: request.headers,
-      ...(request.method === 'POST' ? { body: JSON.stringify(request.body ?? {}) } : {}),
-      signal: request.signal,
-      credentials: 'include',
-    });
-    const contentType = response.headers.get('content-type') ?? '';
-    const data = contentType.includes('application/json')
-      ? await response.json().catch(() => null)
-      : await response.text().catch(() => '');
-    if (challengeTransport && isCloudflareChallenge(response.status, response.headers, data)) {
-      useChallengeTransport = true;
-      return runChallengeTransport(request);
+    const directController = new AbortController();
+    const abortDirect = () => directController.abort(request.signal.reason);
+    request.signal.addEventListener('abort', abortDirect, { once: true });
+    const directSignal = preferChallengeTransport && challengeTransport
+      ? directController.signal
+      : request.signal;
+    let directTimedOut = false;
+    let directTimeout: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const directFetch = chromiumSession.fetch(request.url, {
+        method: request.method,
+        headers: request.headers,
+        ...(request.method === 'POST' ? { body: JSON.stringify(request.body ?? {}) } : {}),
+        signal: directSignal,
+        credentials: 'include',
+      });
+      const response = preferChallengeTransport && challengeTransport
+        ? await Promise.race([
+            directFetch,
+            new Promise<never>((_resolve, reject) => {
+              directTimeout = setTimeout(() => {
+                directTimedOut = true;
+                directController.abort();
+                reject(new Error('Rivals Data direct request timed out.'));
+              }, 5_000);
+            }),
+          ])
+        : await directFetch;
+      const contentType = response.headers.get('content-type') ?? '';
+      const data = contentType.includes('application/json')
+        ? await response.json().catch(() => null)
+        : await response.text().catch(() => '');
+      if (challengeTransport && isCloudflareChallenge(response.status, response.headers, data)) {
+        useChallengeTransport = true;
+        return runChallengeTransport(request);
+      }
+      if (response.ok && !contentType.includes('application/json')) {
+        return { status: 502, data: { error: 'Rivals Data returned a non-JSON response.' } };
+      }
+      return { status: response.status, data, headers: Object.fromEntries(response.headers.entries()) };
+    } catch (error) {
+      if (request.signal.aborted) throw request.signal.reason;
+      if (directTimedOut && challengeTransport) {
+        useChallengeTransport = true;
+        return runChallengeTransport(request);
+      }
+      throw error;
+    } finally {
+      if (directTimeout) clearTimeout(directTimeout);
+      request.signal.removeEventListener('abort', abortDirect);
     }
-    if (response.ok && !contentType.includes('application/json')) {
-      return { status: 502, data: { error: 'Rivals Data returned a non-JSON response.' } };
-    }
-    return { status: response.status, data, headers: Object.fromEntries(response.headers.entries()) };
   };
   return send;
 }
@@ -794,11 +826,14 @@ class RivalsDataBrowserTransport {
       debuggerClient.attach('1.3');
       debuggerAttached = true;
       debuggerClient.on('message', onDebuggerMessage);
-      await debuggerClient.sendCommand('Network.enable');
+      // Network.enable can wait for a renderer when the BrowserWindow still has
+      // its initial empty document. Do not let diagnostics block navigation.
+      void debuggerClient.sendCommand('Network.enable').catch(() => undefined);
     } catch { debuggerAttached = false; }
-    await settleWithSignal(browser.loadURL(this.verificationUrl(request)), request.signal).catch((error) => {
-      if (request.signal.aborted) throw error;
-    });
+    // A managed challenge can keep Electron's loadURL promise pending until the
+    // challenge is solved. Start navigation without blocking the visibility and
+    // polling loop, otherwise the user never gets a window to complete it in.
+    void browser.loadURL(this.verificationUrl(request)).catch(() => undefined);
 
     let verificationShown = false;
     let verificationWasShown = false;
@@ -806,13 +841,31 @@ class RivalsDataBrowserTransport {
     let challengeFocused = false;
     let keepBackgroundWindow = false;
     const showVerificationAt = Date.now() + 750;
+    const showVerification = () => {
+      if (verificationShown || browser.isDestroyed()) return;
+      verificationShown = true;
+      verificationWasShown = true;
+      browser.setSkipTaskbar(false);
+      browser.center();
+      browser.setAlwaysOnTop(true, 'floating');
+      browser.show();
+      browser.focus();
+      setTimeout(() => {
+        if (!browser.isDestroyed()) browser.setAlwaysOnTop(false);
+      }, 1_500);
+    };
+    // This flow starts only after the protected request challenges or stalls.
+    // Show the first-party player page independently of DOM probing because
+    // Turnstile can replace renderer frames while those probes are pending.
+    const showVerificationTimer = setTimeout(showVerification, 750);
     const deadline = Date.now() + 120_000;
     try {
       while (!browser.isDestroyed() && Date.now() < deadline) {
         let title = '';
         let apiProbe: Awaited<ReturnType<RivalsDataTransport>> | null = null;
         try {
-          const challengeVisible = Boolean(await browser.webContents.executeJavaScript(`(() => {
+          const challengeVisible = Boolean(await Promise.race([
+            browser.webContents.executeJavaScript(`(() => {
             const isVisible = (element, minimumWidth = 1, minimumHeight = 1) => {
               if (!element) return false;
               const rect = element.getBoundingClientRect();
@@ -836,7 +889,9 @@ class RivalsDataBrowserTransport {
               return true;
             }
             return false;
-          })()`, true));
+          })()`, true),
+            new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1_500)),
+          ]));
           title = browser.webContents.getTitle();
           visibleChallengeChecks = challengeVisible ? visibleChallengeChecks + 1 : 0;
           if (challengeVisible && !challengeFocused) {
@@ -853,7 +908,10 @@ class RivalsDataBrowserTransport {
         }
         if (request.signal.aborted) throw request.signal.reason;
         try {
-          apiProbe = capturedResponse ?? await this.executeInPage(browser, request);
+          apiProbe = capturedResponse ?? await Promise.race([
+            this.executeInPage(browser, request),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000)),
+          ]);
         } catch {
           if (request.signal.aborted) throw request.signal.reason;
         }
@@ -868,34 +926,22 @@ class RivalsDataBrowserTransport {
           browser.hide();
           return apiProbe;
         }
-        const confirmedChallenge = pageChallengeVisible || visibleChallengeChecks >= 2;
+        const probeChallenge = apiProbe != null
+          && isCloudflareChallenge(apiProbe.status, new Headers(apiProbe.headers), apiProbe.data);
+        const confirmedChallenge = pageChallengeVisible || visibleChallengeChecks >= 2 || probeChallenge;
         if (!verificationShown && confirmedChallenge && Date.now() >= showVerificationAt) {
-          verificationShown = true;
-          verificationWasShown = true;
-          browser.setSkipTaskbar(false);
-          browser.center();
-          browser.setAlwaysOnTop(true, 'floating');
-          browser.show();
-          browser.focus();
-          setTimeout(() => {
-            if (!browser.isDestroyed()) browser.setAlwaysOnTop(false);
-          }, 1_500);
+          showVerification();
         }
-        if (verificationShown && !confirmedChallenge) {
-          // The challenge has cleared. Remove the verification window
-          // immediately while the original API request is retried in the same
-          // authenticated browser session.
-          verificationShown = false;
-          browser.setAlwaysOnTop(false);
-          browser.setSkipTaskbar(true);
-          browser.hide();
-        }
+        // Keep the verification page visible until the original API request is
+        // successful. Hiding it merely because an iframe was replaced can make
+        // a multi-stage Turnstile flow impossible to finish.
         await new Promise((resolve) => setTimeout(resolve, 1_000));
       }
       throw new Error(verificationWasShown
         ? 'Rivals Data verification was closed or timed out. Finish both Cloudflare verification steps, or use the browser extension connection.'
         : 'Rivals Data browser verification could not open. Try the browser extension connection instead.');
     } finally {
+      clearTimeout(showVerificationTimer);
       request.signal.removeEventListener('abort', closeOnAbort);
       if (debuggerAttached) {
         debuggerClient.removeListener('message', onDebuggerMessage);
@@ -1145,7 +1191,7 @@ export class RivalsDataApi {
       transport: this.transport,
       // The protected browser fallback can require a user-visible verification
       // on its first request. Keep the SDK deadline inside the IPC deadline.
-      timeoutMs: 100_000,
+      timeoutMs: 150_000,
       cacheTtlMs: 30_000,
       allowFreshMatches: true,
     }));

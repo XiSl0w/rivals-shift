@@ -35,7 +35,7 @@ test('hero intelligence, privacy, removal, and redesigned account hub are presen
   assert.match(appSource, /api\.restoreHiddenAccounts\(steamId64s\)/);
   assert.match(appSource, /Export profiles for another user/);
   assert.match(appSource, /never includes Steam passwords, cookies, tokens, or login sessions/);
-  assert.match(appSource, /What’s new in 0\.9\.50/);
+  assert.match(appSource, /What’s new in 0\.9\.51/);
   assert.doesNotMatch(appSource, /aria-label="Compare accounts"/);
   assert.doesNotMatch(appSource, /aria-label="Account health"/);
   assert.match(styles, /\.privacy-mode/);
@@ -70,7 +70,7 @@ test('bulk refresh uses a bounded retry queue and shows per-account progress', (
   assert.match(appSource, /runBulkProfileRefresh\(/);
   assert.match(appSource, /concurrency: savedPreferences\.rivalsDataMode === 'api' \? 1 : 2/);
   assert.match(appSource, /maxAttempts: 2/);
-  assert.match(appSource, /attemptTimeoutMs: savedPreferences\.rivalsDataMode === 'api' \? 115_000 : 75_000/);
+  assert.match(appSource, /attemptTimeoutMs: savedPreferences\.rivalsDataMode === 'api' \? 175_000 : 75_000/);
   assert.match(appSource, /stopBulkRefresh/);
   assert.match(appSource, /Stop account refresh/);
   assert.match(appSource, /phase === 'cached' \? 'Cached'/);
