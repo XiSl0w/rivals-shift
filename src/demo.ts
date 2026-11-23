@@ -48,8 +48,8 @@ let launcherSkip = false;
 let preferences: AppPreferences = { theme: 'nebula', rivalsDataMode: 'api', discordRichPresence: true, quickSwitchShortcut: false, quickAccessShortcut: 'CommandOrControl+Shift+R', closeAction: 'ask', matchNotifications: true, backgroundMonitoring: false, skipLauncher: false, directLaunchReminder: true, autoUpdates: true, privacyMode: false, startupMode: 'off' };
 const demoUpdateReady = new URLSearchParams(window.location.search).has('updateReady');
 let updateStatus: AppUpdateStatus = demoUpdateReady
-  ? { enabled: true, configured: true, state: 'downloaded', currentVersion: '0.9.49', availableVersion: '0.9.50', progress: 100, message: 'Rival Shift 0.9.50 is ready to install.' }
-  : { enabled: true, configured: false, state: 'unconfigured', currentVersion: '0.9.49', message: 'Add a release feed to activate automatic updates.' };
+  ? { enabled: true, configured: true, state: 'downloaded', currentVersion: '0.9.50', availableVersion: '0.9.51', progress: 100, message: 'Rival Shift 0.9.51 is ready to install.' }
+  : { enabled: true, configured: false, state: 'unconfigured', currentVersion: '0.9.50', message: 'Add a release feed to activate automatic updates.' };
 
 export const demoApi: RivalShiftApi = {
   async minimizeWindow() {},

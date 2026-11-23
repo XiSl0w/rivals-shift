@@ -1402,7 +1402,7 @@ h1, h2, h3, p { margin: 0; }
 .live-teams { flex: 0 0 auto; overflow: visible; align-items: start; }
 .live-team { overflow: visible; }
 
-/* v0.9.49 themed filters, reliable refresh queue, and fast live-lobby dashboard */
+/* v0.9.50 stable Steam switching, current-session ordering, and API recovery */
 .live-modal-heading { padding: 0; }
 .live-heading-actions { display: flex; align-items: center; gap: 8px; }
 .live-refresh-now { height: 28px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(var(--accent-rgb),.18); border-radius: 8px; background: rgba(var(--accent-rgb),.055); color: var(--accent-2); font: 750 7px 'Manrope'; cursor: pointer; }
